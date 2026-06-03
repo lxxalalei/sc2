@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Agent-facing wrapper for SmartEdu textbook downloads.
+
+This script keeps crawler metadata in a work directory and moves only PDF files
+into the final library directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import smartedu_tch_material as crawler
+
+
+def safe_segment(value: Any, fallback: str = "未分类", limit: int = 80) -> str:
+    text = str(value or fallback)
+    return crawler.safe_name(text, limit=limit)
+
+
+def ensure_index(data_dir: Path, force_sync: bool) -> None:
+    if force_sync or not (data_dir / "textbooks.json").exists():
+        print(f"syncing SmartEdu index into {data_dir}", file=sys.stderr)
+        crawler.sync_index(data_dir, include_raw=False)
+
+
+def filter_args(args: argparse.Namespace) -> SimpleNamespace:
+    return SimpleNamespace(
+        query=args.query,
+        stage=args.stage,
+        subject=args.subject,
+        version=args.version,
+        grade=args.grade,
+        volume=args.volume,
+        limit=args.limit,
+    )
+
+
+def destination_for(record: dict[str, Any], source_file: Path, library_dir: Path) -> Path:
+    parts = [
+        safe_segment(record.get("stage")),
+        safe_segment(record.get("grade")),
+        safe_segment(record.get("subject")),
+        safe_segment(record.get("version")),
+        safe_segment(record.get("volume")),
+    ]
+    title = safe_segment(record.get("title") or record.get("id"), limit=120)
+    short_id = str(record.get("id") or "")[:8]
+    name = f"{title}_{short_id}{source_file.suffix or '.pdf'}"
+    return library_dir.joinpath(*parts, name)
+
+
+def organize_downloads(manifest: list[dict[str, Any]], library_dir: Path) -> list[dict[str, Any]]:
+    organized: list[dict[str, Any]] = []
+    for item in manifest:
+        if not item.get("downloaded") or not item.get("file"):
+            organized.append({**item, "library_file": None})
+            continue
+
+        source = Path(str(item["file"]))
+        if not source.exists():
+            organized.append({**item, "library_file": None, "error": "downloaded file missing"})
+            continue
+
+        dest = destination_for(item, source, library_dir)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest.unlink()
+        shutil.move(str(source), str(dest))
+        organized.append({**item, "library_file": str(dest)})
+    return organized
+
+
+def remove_non_pdf_files(library_dir: Path) -> None:
+    if not library_dir.exists():
+        return
+    for path in library_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() != ".pdf":
+            path.unlink()
+
+
+def write_run_summary(work_dir: Path, summary: dict[str, Any]) -> None:
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "last_run_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def record_preview(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": record.get("id"),
+        "title": record.get("title"),
+        "stage": record.get("stage"),
+        "grade": record.get("grade"),
+        "subject": record.get("subject"),
+        "version": record.get("version"),
+        "volume": record.get("volume"),
+        "providers": record.get("providers"),
+    }
+
+
+def run(args: argparse.Namespace) -> int:
+    token = args.access_token or os.environ.get("SMARTEDU_ACCESS_TOKEN")
+    if not token and not args.probe_only and not args.list_only:
+        print("error: SMARTEDU_ACCESS_TOKEN or --access-token is required for PDF downloads", file=sys.stderr)
+        return 2
+
+    work_dir = Path(args.work_dir)
+    data_dir = work_dir / "data"
+    tmp_download_dir = work_dir / "tmp-downloads"
+    library_dir = Path(args.library_dir)
+
+    ensure_index(data_dir, args.sync)
+    records = crawler.filter_records(crawler.load_records(data_dir), filter_args(args))
+    if not records:
+        print("no matching textbooks", file=sys.stderr)
+        write_run_summary(work_dir, {"matched": 0, "downloaded": 0, "library_dir": str(library_dir)})
+        return 1
+
+    if args.list_only:
+        summary = {
+            "matched": len(records),
+            "downloaded": 0,
+            "library_dir": str(library_dir),
+            "filters": {
+                "stage": args.stage,
+                "grade": args.grade,
+                "subject": args.subject,
+                "version": args.version,
+                "volume": args.volume,
+                "query": args.query,
+            },
+            "candidates": [record_preview(record) for record in records[: args.show]],
+        }
+        write_run_summary(work_dir, summary)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    manifest = crawler.download_pdfs(
+        records=records,
+        data_dir=data_dir,
+        out_dir=tmp_download_dir,
+        workers=args.workers,
+        access_token=token,
+        probe_only=args.probe_only,
+    )
+
+    if args.probe_only:
+        organized = manifest
+    else:
+        organized = organize_downloads(manifest, library_dir)
+        remove_non_pdf_files(library_dir)
+
+    downloaded = [item for item in organized if item.get("downloaded")]
+    summary = {
+        "matched": len(records),
+        "downloaded": len(downloaded),
+        "library_dir": str(library_dir),
+        "filters": {
+            "stage": args.stage,
+            "grade": args.grade,
+            "subject": args.subject,
+            "version": args.version,
+            "volume": args.volume,
+            "query": args.query,
+        },
+        "files": [item.get("library_file") for item in organized if item.get("library_file")],
+        "failures": [
+            {"id": item.get("id"), "title": item.get("title"), "error": item.get("error")}
+            for item in organized
+            if not item.get("downloaded")
+        ],
+    }
+    write_run_summary(work_dir, summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0 if downloaded else 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Download SmartEdu textbooks into a clean PDF library")
+    parser.add_argument("--stage", help="学段，例如 小学")
+    parser.add_argument("--grade", help="年级，例如 三年级")
+    parser.add_argument("--subject", help="学科，例如 数学")
+    parser.add_argument("--version", help="教材版本，例如 人教版")
+    parser.add_argument("--volume", help="册次，例如 上册")
+    parser.add_argument("--query", help="额外关键词检索")
+    parser.add_argument("--limit", type=int, help="限制下载数量")
+    parser.add_argument("--library-dir", default="教材资料库", help="只存放 PDF 的最终资料库目录")
+    parser.add_argument("--work-dir", default=".smartedu-textbooks-work", help="缓存元数据和临时下载的工作目录")
+    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--access-token", help="SmartEdu access token; prefer SMARTEDU_ACCESS_TOKEN")
+    parser.add_argument("--sync", action="store_true", help="强制重新同步教材索引")
+    parser.add_argument("--probe-only", action="store_true", help="只测试可访问性，不保存 PDF")
+    parser.add_argument("--list-only", action="store_true", help="只列出匹配教材，不下载也不需要 token")
+    parser.add_argument("--show", type=int, default=20, help="list-only 模式展示的最大候选数量")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SmartEdu Textbooks"
+  short_description: "Download and organize SmartEdu textbooks"
+  default_prompt: "Use $smartedu-textbooks to find and download primary school textbooks into a structured local library."

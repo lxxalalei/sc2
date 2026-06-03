@@ -1,0 +1,16 @@
+.agents/
+.codex/
+
+data/
+downloads/
+教材资料库/
+学习资料库/
+.smartedu-textbooks-work/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+.env
+.env.*
+*.log
