@@ -1,0 +1,4 @@
+interface:
+  display_name: "学习资源详情分析"
+  short_description: "分析候选资源格式和内容证据"
+  default_prompt: "使用 $learning-resource-analyzer 对学习资源候选做格式识别、详情解析和内容证据提取。"

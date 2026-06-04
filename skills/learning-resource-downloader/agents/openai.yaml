@@ -1,0 +1,4 @@
+interface:
+  display_name: "学习资源下载缓存"
+  short_description: "下载用户选择的候选资源"
+  default_prompt: "使用 $learning-resource-downloader 根据用户选择下载学习资源到工作缓存目录。"

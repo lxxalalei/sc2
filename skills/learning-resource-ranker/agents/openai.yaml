@@ -1,0 +1,4 @@
+interface:
+  display_name: "学习资源质量评分"
+  short_description: "为学习资源候选打分排序"
+  default_prompt: "使用 $learning-resource-ranker 对候选学习资源进行质量评分、排序并解释推荐理由。"

@@ -1,4 +1,4 @@
 interface:
-  display_name: "SmartEdu Textbooks"
-  short_description: "Download and organize SmartEdu textbooks"
-  default_prompt: "Use $smartedu-textbooks to find and download primary school textbooks into a structured local library."
+  display_name: "智慧教育平台教材"
+  short_description: "查找、下载并整理官方教材"
+  default_prompt: "使用 $smartedu-textbooks 查找并下载官方教材到结构化本地资料库。"

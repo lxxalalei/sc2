@@ -1,0 +1,4 @@
+interface:
+  display_name: "通用学习资源搜索"
+  short_description: "搜索网页学习资源候选"
+  default_prompt: "使用 $web-learning-search 根据结构化学习需求搜索网页学习资源候选。"

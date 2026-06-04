@@ -93,17 +93,59 @@ def write_run_summary(work_dir: Path, summary: dict[str, Any]) -> None:
     )
 
 
-def record_preview(record: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": record.get("id"),
+def emit_summary(args: argparse.Namespace, summary: dict[str, Any]) -> None:
+    output = json.dumps(summary, ensure_ascii=False, indent=2)
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(output + "\n", encoding="utf-8")
+    else:
+        print(output)
+
+
+def metadata_confidence(record: dict[str, Any]) -> float:
+    fields = ["title", "stage", "grade", "subject", "version", "volume"]
+    present = sum(1 for field in fields if record.get(field))
+    return round(present / len(fields), 2)
+
+
+def standard_candidate(record: dict[str, Any], local_file: str | None = None) -> dict[str, Any]:
+    providers = record.get("providers") or []
+    provider = "/".join(providers) if providers else ""
+    candidate = {
+        "source": "smartedu-textbooks",
+        "source_name": "国家中小学智慧教育平台",
+        "source_url": record.get("detail_page"),
+        "resource_id": record.get("id"),
         "title": record.get("title"),
+        "resource_type": "教材",
+        "format": record.get("format") or "pdf",
         "stage": record.get("stage"),
         "grade": record.get("grade"),
         "subject": record.get("subject"),
         "version": record.get("version"),
         "volume": record.get("volume"),
-        "providers": record.get("providers"),
+        "topic": None,
+        "provider": provider,
+        "official": True,
+        "downloadable": True,
+        "requires_auth": True,
+        "size": record.get("size"),
+        "metadata_confidence": metadata_confidence(record),
+        "raw": {
+            "id": record.get("id"),
+            "thumbnail": record.get("thumbnail"),
+            "preview_count": record.get("preview_count"),
+            "providers": providers,
+        },
     }
+    if local_file:
+        candidate["local_file"] = local_file
+    return candidate
+
+
+def candidate_from_download(item: dict[str, Any]) -> dict[str, Any]:
+    local_file = item.get("library_file") if item.get("downloaded") else None
+    return standard_candidate(item, local_file=local_file)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -137,10 +179,11 @@ def run(args: argparse.Namespace) -> int:
                 "volume": args.volume,
                 "query": args.query,
             },
-            "candidates": [record_preview(record) for record in records[: args.show]],
+            "candidate_schema": "learning-resource-candidate/v1",
+            "candidates": [standard_candidate(record) for record in records[: args.show]],
         }
         write_run_summary(work_dir, summary)
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        emit_summary(args, summary)
         return 0
 
     manifest = crawler.download_pdfs(
@@ -172,6 +215,8 @@ def run(args: argparse.Namespace) -> int:
             "query": args.query,
         },
         "files": [item.get("library_file") for item in organized if item.get("library_file")],
+        "candidate_schema": "learning-resource-candidate/v1",
+        "candidates": [candidate_from_download(item) for item in organized if item.get("downloaded")],
         "failures": [
             {"id": item.get("id"), "title": item.get("title"), "error": item.get("error")}
             for item in organized
@@ -179,7 +224,7 @@ def run(args: argparse.Namespace) -> int:
         ],
     }
     write_run_summary(work_dir, summary)
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    emit_summary(args, summary)
     return 0 if downloaded else 1
 
 
@@ -200,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--probe-only", action="store_true", help="只测试可访问性，不保存 PDF")
     parser.add_argument("--list-only", action="store_true", help="只列出匹配教材，不下载也不需要 token")
     parser.add_argument("--show", type=int, default=20, help="list-only 模式展示的最大候选数量")
+    parser.add_argument("-o", "--output", help="将 JSON 摘要写入指定文件")
     return parser
 
 

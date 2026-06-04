@@ -1,0 +1,19 @@
+{
+  "task_id": "task_001",
+  "task_type": "source_search",
+  "target_skill": "web-learning-search",
+  "action": "search",
+  "query": "8岁 四则混合运算 练习题 可打印 PDF",
+  "filters": {
+    "learner_age": 8,
+    "stage": "小学低年级",
+    "subject": "数学",
+    "learning_domain": "数学",
+    "core_topic": "四则混合运算",
+    "resource_types": ["习题"],
+    "printable": true
+  },
+  "expected_resource_types": ["习题"],
+  "expected_formats": ["PDF", "DOC/DOCX"],
+  "download_policy": "after_user_selection"
+}

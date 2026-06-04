@@ -1,0 +1,28 @@
+{
+  "candidate_schema": "learning-resource-candidate/v1",
+  "candidates": [
+    {
+      "source": "web-learning-search",
+      "source_url": "https://example.edu.cn/math/8age-mixed-arithmetic.pdf",
+      "resource_id": "sample_pdf",
+      "title": "8岁四则混合运算可打印练习题 PDF",
+      "description": "适合小学低年级儿童的数学练习。",
+      "resource_type": "习题",
+      "format": "pdf",
+      "downloadable": true,
+      "raw": {}
+    },
+    {
+      "source": "web-learning-search",
+      "source_url": "https://example.com/dino.html",
+      "resource_id": "sample_html",
+      "title": "儿童恐龙百科",
+      "description": "面向儿童的恐龙科普网页。",
+      "resource_type": "百科文章",
+      "format": "html",
+      "local_file": "skills/learning-resource-analyzer/references/sample-page.html",
+      "downloadable": false,
+      "raw": {}
+    }
+  ]
+}

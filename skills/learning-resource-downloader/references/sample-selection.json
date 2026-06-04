@@ -1,0 +1,29 @@
+{
+  "selection_schema": "learning-resource-selection/v1",
+  "status": "awaiting_user_selection",
+  "options": [
+    {
+      "option_id": "A",
+      "title": "需要授权的官方资源",
+      "source_name": "示例来源",
+      "source_url": "https://example.edu.cn/protected.pdf",
+      "resource_id": "protected",
+      "resource_type": "教材",
+      "format": "pdf",
+      "quality_level": "high",
+      "score": 80,
+      "downloadable": true,
+      "requires_auth": true,
+      "official": true,
+      "candidate": {
+        "source": "example-source",
+        "source_url": "https://example.edu.cn/protected.pdf",
+        "title": "需要授权的官方资源",
+        "format": "pdf",
+        "downloadable": true,
+        "requires_auth": true,
+        "raw": {}
+      }
+    }
+  ]
+}

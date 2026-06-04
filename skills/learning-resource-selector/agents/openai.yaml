@@ -1,0 +1,4 @@
+interface:
+  display_name: "学习资源候选选择"
+  short_description: "把评分结果整理成可选清单"
+  default_prompt: "使用 $learning-resource-selector 将评分后的学习资源候选整理成用户可选择的清单。"
