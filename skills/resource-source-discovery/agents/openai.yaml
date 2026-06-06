@@ -1,0 +1,4 @@
+interface:
+  display_name: "资源站发现"
+  short_description: "识别搜索结果中的资源站候选"
+  default_prompt: "使用 $resource-source-discovery 从搜索结果中识别可分析的学习资源站候选。"

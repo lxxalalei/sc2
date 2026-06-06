@@ -1,0 +1,44 @@
+{
+  "candidate_schema": "learning-resource-candidate/v1",
+  "source_skill": "web-learning-search",
+  "query": "小学三年级数学练习题 PDF",
+  "filters": {
+    "stage": "小学",
+    "grade": "三年级",
+    "subject": "数学",
+    "resource_types": ["习题"],
+    "format_preferences": ["PDF"]
+  },
+  "candidates": [
+    {
+      "source": "web-learning-search",
+      "source_name": "basic.smartedu.cn",
+      "source_url": "https://basic.smartedu.cn/tchMaterial",
+      "title": "国家中小学智慧教育平台 教材",
+      "description": "官方教材资源。",
+      "resource_type": "教材",
+      "format": "html",
+      "raw": {"warnings": []}
+    },
+    {
+      "source": "web-learning-search",
+      "source_name": "example.edu.cn",
+      "source_url": "https://example.edu.cn/math/grade3",
+      "title": "小学三年级数学练习题 PDF 下载",
+      "description": "包含 PDF、DOC、试卷和可打印练习题。",
+      "resource_type": "习题",
+      "format": "html",
+      "raw": {"warnings": []}
+    },
+    {
+      "source": "web-learning-search",
+      "source_name": "bad.example.com",
+      "source_url": "https://bad.example.com/downloader",
+      "title": "高速下载器 破解资源",
+      "description": "成人广告 贷款 注册机",
+      "resource_type": "网页",
+      "format": "html",
+      "raw": {"warnings": ["包含风险词：破解"]}
+    }
+  ]
+}

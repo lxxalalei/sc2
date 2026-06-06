@@ -1,0 +1,693 @@
+#!/usr/bin/env python3
+"""Run offline smoke tests for the learning resource skill chain."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import shutil
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+from typing import Any
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run_cmd(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, cwd=str(cwd), text=True, capture_output=True)
+
+
+def assert_true(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def write_docx(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        archive.writestr("word/document.xml", xml)
+
+
+def write_pptx(path: Path, slide_texts: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        for index, text in enumerate(slide_texts, 1):
+            archive.writestr(
+                f"ppt/slides/slide{index}.xml",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+                'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+                f"<p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>",
+            )
+
+
+def write_png(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    png_2x1 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    path.write_bytes(base64.b64decode(png_2x1))
+
+
+class SmokeRunner:
+    def __init__(self, root: Path, work_dir: Path, keep_work: bool) -> None:
+        self.root = root
+        self.work_dir = work_dir
+        self.keep_work = keep_work
+        self.skills = root / "skills"
+        self.results: list[tuple[str, str]] = []
+
+    def script(self, *parts: str) -> str:
+        return str(self.skills.joinpath(*parts))
+
+    def command(self, name: str, cmd: list[str], expect_success: bool = True) -> subprocess.CompletedProcess[str]:
+        result = run_cmd(cmd, self.root)
+        ok = result.returncode == 0 if expect_success else result.returncode != 0
+        self.results.append((name, "ok" if ok else "failed"))
+        if not ok:
+            print(f"\n[失败] {name}", file=sys.stderr)
+            print("命令:", " ".join(cmd), file=sys.stderr)
+            print("stdout:\n" + result.stdout, file=sys.stderr)
+            print("stderr:\n" + result.stderr, file=sys.stderr)
+            raise SystemExit(result.returncode or 1)
+        return result
+
+    def prepare(self) -> None:
+        if self.work_dir.exists() and not self.keep_work:
+            shutil.rmtree(self.work_dir)
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+
+    def test_web_to_selection(self) -> Path:
+        search_results = self.work_dir / "search-results.json"
+        task = self.work_dir / "task.json"
+        candidates = self.work_dir / "web-candidates.json"
+        analyzed = self.work_dir / "web-analyzed.json"
+        ranking = self.work_dir / "web-ranking.json"
+        selection = self.work_dir / "web-selection.json"
+
+        write_json(
+            search_results,
+            {
+                "query": "8岁 四则混合运算 练习题 可打印 PDF",
+                "search_results": [
+                    {
+                        "title": "8岁四则混合运算可打印练习题 PDF",
+                        "url": "https://example.edu.cn/math.pdf",
+                        "snippet": "适合小学低年级儿童的数学练习，可直接打印。",
+                    },
+                    {
+                        "title": "成人贷款下载器",
+                        "url": "https://example.com/downloader.exe",
+                        "snippet": "高速下载器 破解 成人 贷款",
+                    },
+                ],
+            },
+        )
+        write_json(
+            task,
+            {
+                "task_id": "task_001",
+                "target_skill": "web-learning-search",
+                "query": "8岁 四则混合运算 练习题 可打印 PDF",
+                "filters": {
+                    "learner_age": 8,
+                    "subject": "数学",
+                    "core_topic": "四则混合运算",
+                    "resource_types": ["习题"],
+                    "format_preferences": ["PDF"],
+                },
+            },
+        )
+
+        self.command(
+            "web-learning-search",
+            [
+                sys.executable,
+                self.script("web-learning-search", "scripts", "search_web_resources.py"),
+                "--search-results-json",
+                str(search_results),
+                "--task-json",
+                str(task),
+                "-o",
+                str(candidates),
+            ],
+        )
+        self.command(
+            "learning-resource-analyzer",
+            [
+                sys.executable,
+                self.script("learning-resource-analyzer", "scripts", "analyze_candidates.py"),
+                str(candidates),
+                "-o",
+                str(analyzed),
+            ],
+        )
+        self.command(
+            "learning-resource-ranker",
+            [
+                sys.executable,
+                self.script("learning-resource-ranker", "scripts", "rank_candidates.py"),
+                str(analyzed),
+                "-o",
+                str(ranking),
+            ],
+        )
+        self.command(
+            "learning-resource-selector",
+            [
+                sys.executable,
+                self.script("learning-resource-selector", "scripts", "select_candidates.py"),
+                str(ranking),
+                "-o",
+                str(selection),
+            ],
+        )
+
+        selection_data = load_json(selection)
+        assert_true(selection_data.get("status") == "awaiting_user_selection", "selector 应输出待用户选择状态")
+        assert_true(selection_data.get("shown_count", 0) >= 1, "selector 应至少展示一个候选")
+        return selection
+
+    def test_source_discovery_and_profiler(self) -> None:
+        sample_candidates = self.skills / "resource-source-discovery" / "references" / "sample-web-candidates.json"
+        source_discovery = self.work_dir / "source-discovery.json"
+        site_profile = self.work_dir / "site-profile.json"
+        generic_candidates = self.work_dir / "generic-candidates.json"
+        sample_html = self.skills / "web-resource-profiler" / "references" / "sample-resource-page.html"
+
+        self.command(
+            "resource-source-discovery",
+            [
+                sys.executable,
+                self.script("resource-source-discovery", "scripts", "discover_sources.py"),
+                str(sample_candidates),
+                "-o",
+                str(source_discovery),
+            ],
+        )
+        discovery_data = load_json(source_discovery)
+        assert_true(discovery_data["summary"]["sources"] >= 1, "source discovery 应识别至少一个可用来源")
+        assert_true(discovery_data["summary"]["rejected"] >= 1, "source discovery 应拒绝风险来源")
+
+        self.command(
+            "web-resource-profiler",
+            [
+                sys.executable,
+                self.script("web-resource-profiler", "scripts", "profile_site.py"),
+                "--url",
+                "https://example.edu.cn/resources",
+                "--html-file",
+                str(sample_html),
+                "-o",
+                str(site_profile),
+            ],
+        )
+        profile_data = load_json(site_profile)
+        assert_true(profile_data["summary"]["profiled"] == 1, "profiler 应生成 1 个站点画像")
+        profile = profile_data["profiles"][0]
+        assert_true(profile["crawl_strategy"] == "generic_extract", "样例资源页应建议通用抽取")
+        assert_true(len(profile.get("resource_links") or []) >= 2, "样例资源页应识别资源链接")
+
+        self.command(
+            "generic-web-source",
+            [
+                sys.executable,
+                self.script("generic-web-source", "scripts", "extract_candidates.py"),
+                "--site-profile-json",
+                str(site_profile),
+                "-o",
+                str(generic_candidates),
+            ],
+        )
+        generic_data = load_json(generic_candidates)
+        generic_items = generic_data.get("candidates") or []
+        assert_true(len(generic_items) >= 2, "generic-web-source 应抽取至少 2 个候选")
+        assert_true(any(item.get("format") == "pdf" for item in generic_items), "generic-web-source 应包含 PDF 候选")
+        assert_true(bool(generic_items[0].get("raw", {}).get("origin_page_url")), "通用抽取候选应保留原始页面 URL")
+
+    def test_smartedu_resources(self) -> None:
+        catalogs_json = self.work_dir / "smartedu-catalogs.json"
+        textbook_candidates_json = self.work_dir / "smartedu-textbook-candidates.json"
+        textbook_work_dir = self.work_dir / "smartedu-textbook-work"
+        search_candidates_json = self.work_dir / "smartedu-search-candidates.json"
+        search_detail_candidates_json = self.work_dir / "smartedu-search-detail-candidates.json"
+        search_detail_dir = self.work_dir / "smartedu-search-details"
+        candidates_json = self.work_dir / "smartedu-resource-candidates.json"
+        sample_library = self.skills / "smartedu-resources" / "references" / "sample-librarylist.json"
+        sample_textbooks = self.skills / "smartedu-resources" / "references" / "sample-textbooks.json"
+        sample_search = self.skills / "smartedu-resources" / "references" / "sample-search-response.json"
+        sample_detail = self.skills / "smartedu-resources" / "references" / "sample-detail.json"
+
+        self.command(
+            "smartedu-resources-catalogs",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "list-catalogs",
+                "--library-list-json",
+                str(sample_library),
+                "-o",
+                str(catalogs_json),
+            ],
+        )
+        catalogs = load_json(catalogs_json)
+        assert_true(catalogs["summary"]["resource_catalogs"] >= 1, "SmartEdu 栏目画像应包含通用资源栏目")
+        assert_true(catalogs["summary"]["textbook_catalogs"] == 1, "SmartEdu 栏目画像应识别站内教材资源分支")
+        assert_true(all(item.get("known_skill") == "smartedu-resources" for item in catalogs.get("catalogs") or []), "SmartEdu 所有站内栏目应统一路由到 smartedu-resources")
+
+        shutil.copytree(sample_textbooks.parent, textbook_work_dir / "refs", dirs_exist_ok=True)
+        (textbook_work_dir / "data").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(sample_textbooks, textbook_work_dir / "data" / "textbooks.json")
+        self.command(
+            "smartedu-resources-textbooks",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "textbook-candidates",
+                "--stage",
+                "小学",
+                "--grade",
+                "三年级",
+                "--subject",
+                "数学",
+                "--work-dir",
+                str(textbook_work_dir),
+                "-o",
+                str(textbook_candidates_json),
+            ],
+        )
+        textbook_data = load_json(textbook_candidates_json)
+        textbook_candidates = textbook_data.get("candidates") or []
+        assert_true(textbook_data.get("source_skill") == "smartedu-resources", "教材候选应由 smartedu-resources 对外输出")
+        assert_true(textbook_data.get("internal_adapter") == "tchMaterial", "教材候选应标记内部教材分支")
+        assert_true(len(textbook_candidates) == 1, "SmartEdu 教材候选应按条件过滤")
+        assert_true(textbook_candidates[0].get("source") == "smartedu-resources", "教材候选 source 应统一为 smartedu-resources")
+        assert_true(textbook_candidates[0].get("raw", {}).get("internal_adapter") == "tchMaterial", "教材候选应保留内部适配器标记")
+
+        self.command(
+            "smartedu-resources-search",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "search-resources",
+                "--query",
+                "三年级数学",
+                "--search-response-json",
+                str(sample_search),
+                "--header",
+                "X-Test-Auth: test-marker-value",
+                "-o",
+                str(search_candidates_json),
+            ],
+        )
+        search_data = load_json(search_candidates_json)
+        search_candidates = search_data.get("candidates") or []
+        assert_true(len(search_candidates) == 2, "SmartEdu 搜索响应应归一化为候选")
+        assert_true(search_data.get("summary", {}).get("auth_context") is True, "SmartEdu 授权上下文应被标记但不泄露")
+        assert_true("test-marker-value" not in search_candidates_json.read_text(encoding="utf-8"), "SmartEdu 输出不应包含授权 header 原文")
+        assert_true(all(item.get("source") == "smartedu-resources" for item in search_candidates), "搜索候选 source 应正确")
+        assert_true(any(item.get("raw", {}).get("smartedu_search_item") for item in search_candidates), "搜索候选应保留原始搜索项")
+        assert_true(all(item.get("downloadable") is False for item in search_candidates), "搜索候选未解析详情前不应标记可下载")
+
+        detail_fixture = load_json(sample_detail)
+        detail_fixture["id"] = "qc-math-001"
+        search_detail_dir.mkdir(parents=True, exist_ok=True)
+        write_json(search_detail_dir / "qc-math-001.json", detail_fixture)
+        self.command(
+            "smartedu-resources-search-details",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "search-resources",
+                "--query",
+                "三年级数学",
+                "--search-response-json",
+                str(sample_search),
+                "--fetch-details",
+                "--detail-dir",
+                str(search_detail_dir),
+                "--offline-details-only",
+                "-o",
+                str(search_detail_candidates_json),
+            ],
+        )
+        search_detail_data = load_json(search_detail_candidates_json)
+        detail_candidates = search_detail_data.get("candidates") or []
+        detail_formats = {item.get("format") for item in detail_candidates}
+        assert_true({"m3u8", "pdf", "jpg"}.issubset(detail_formats), "搜索详情追踪应展开 ti_items 文件项")
+        assert_true(search_detail_data.get("summary", {}).get("details_fetched") == 1, "搜索详情追踪应命中 1 个详情")
+        assert_true(search_detail_data.get("summary", {}).get("detail_failures") == 1, "缺失详情应记录失败并保留搜索候选")
+        assert_true(any(item.get("downloadable") is True for item in detail_candidates), "详情文件项候选应可进入后续下载判断")
+
+        self.command(
+            "smartedu-resources-candidates",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "candidates-from-detail",
+                "--catalog",
+                "qualityCourse",
+                "--sub-catalog",
+                "course",
+                "--detail-json",
+                str(sample_detail),
+                "-o",
+                str(candidates_json),
+            ],
+        )
+        candidates = load_json(candidates_json).get("candidates") or []
+        formats = {item.get("format") for item in candidates}
+        assert_true({"m3u8", "pdf", "jpg"}.issubset(formats), "SmartEdu 详情应抽取视频、PDF、图片候选")
+        assert_true(all(item.get("source") == "smartedu-resources" for item in candidates), "SmartEdu 候选 source 应正确")
+        assert_true(any(item.get("requires_auth") for item in candidates), "私有 NDR 资源应标记需要授权")
+        assert_true(bool(candidates[0].get("raw", {}).get("smartedu_item")), "候选应保留原始 ti_item")
+
+    def test_multiformat_analyzer(self) -> None:
+        fixture_dir = self.work_dir / "analyzer-fixtures"
+        docx_file = fixture_dir / "四则混合运算讲义.docx"
+        pptx_file = fixture_dir / "分数认识课件.pptx"
+        png_file = fixture_dir / "恐龙百科图卡.png"
+        html_file = fixture_dir / "risk.html"
+        candidates_json = self.work_dir / "multiformat-candidates.json"
+        analyzed_json = self.work_dir / "multiformat-analyzed.json"
+
+        write_docx(docx_file, "四则混合运算 练习 可打印")
+        write_pptx(pptx_file, ["分数初步认识 课件", "三年级数学练习"])
+        write_png(png_file)
+        html_file.write_text(
+            "<!doctype html><html><head><title>风险下载页</title></head>"
+            "<body>高速下载器 免费破解 成人 贷款</body></html>",
+            encoding="utf-8",
+        )
+        write_json(
+            candidates_json,
+            {
+                "candidate_schema": "learning-resource-candidate/v1",
+                "candidates": [
+                    {"title": "四则混合运算讲义", "format": "docx", "local_file": str(docx_file), "source_url": "file://docx"},
+                    {"title": "分数认识课件", "format": "pptx", "local_file": str(pptx_file), "source_url": "file://pptx"},
+                    {"title": "恐龙百科图卡", "format": "png", "local_file": str(png_file), "source_url": "file://png"},
+                    {"title": "风险下载页", "format": "html", "local_file": str(html_file), "source_url": "file://html"},
+                ],
+            },
+        )
+
+        self.command(
+            "multiformat-analyzer",
+            [
+                sys.executable,
+                self.script("learning-resource-analyzer", "scripts", "analyze_candidates.py"),
+                str(candidates_json),
+                "-o",
+                str(analyzed_json),
+            ],
+        )
+        analyzed = load_json(analyzed_json)
+        by_title = {item["title"]: item for item in analyzed.get("candidates") or []}
+        doc_analysis = by_title["四则混合运算讲义"]["raw"]["analysis"]
+        ppt_analysis = by_title["分数认识课件"]["raw"]["analysis"]
+        png_analysis = by_title["恐龙百科图卡"]["raw"]["analysis"]
+        risk_analysis = by_title["风险下载页"]["raw"]["analysis"]
+        assert_true("四则混合运算" in doc_analysis.get("text_sample", ""), "DOCX 应提取正文样本")
+        assert_true(ppt_analysis.get("signals", {}).get("slide_count") == 2, "PPTX 应提取幻灯片数量")
+        assert_true(png_analysis.get("signals", {}).get("width") == 2, "PNG 应提取图片宽度")
+        assert_true(any("成人" in item for item in risk_analysis.get("warnings") or []), "HTML 风险页应识别成人化风险词")
+
+    def test_smartedu_downloader_auth_policy(self) -> None:
+        selection_json = self.work_dir / "smartedu-selection.json"
+        skipped_json = self.work_dir / "smartedu-download-skipped.json"
+        probed_json = self.work_dir / "smartedu-download-probed.json"
+        attempted_json = self.work_dir / "smartedu-download-attempted.json"
+        write_json(
+            selection_json,
+            {
+                "selection_schema": "learning-resource-selection/v1",
+                "options": [
+                    {
+                        "option_id": "A",
+                        "title": "SmartEdu 分数讲义",
+                        "source_url": "http://127.0.0.1:9/private.pdf",
+                        "format": "pdf",
+                        "resource_type": "文档",
+                        "requires_auth": True,
+                        "candidate": {
+                            "source": "smartedu-resources",
+                            "title": "SmartEdu 分数讲义",
+                            "source_url": "http://127.0.0.1:9/private.pdf",
+                            "format": "pdf",
+                            "resource_type": "文档",
+                            "requires_auth": True,
+                            "raw": {
+                                "url_candidates": [
+                                    "http://127.0.0.1:9/private.pdf",
+                                    "http://127.0.0.1:9/public.pdf"
+                                ]
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+        self.command(
+            "smartedu-downloader-skips-auth",
+            [
+                sys.executable,
+                self.script("learning-resource-downloader", "scripts", "download_selected.py"),
+                str(selection_json),
+                "--select",
+                "A",
+                "-o",
+                str(skipped_json),
+            ],
+            expect_success=False,
+        )
+        skipped = load_json(skipped_json)
+        assert_true(skipped.get("skipped", [{}])[0].get("reason") == "需要登录或授权访问", "默认应跳过授权资源")
+
+        self.command(
+            "smartedu-downloader-probe-auth",
+            [
+                sys.executable,
+                self.script("learning-resource-downloader", "scripts", "download_selected.py"),
+                str(selection_json),
+                "--select",
+                "A",
+                "--allow-auth",
+                "--probe-only",
+                "--header",
+                "X-Test-Auth: test-marker-value",
+                "--timeout",
+                "1",
+                "-o",
+                str(probed_json),
+            ],
+            expect_success=False,
+        )
+        probed = load_json(probed_json)
+        assert_true(probed.get("probe_only") is True, "probe-only 模式应被标记")
+        assert_true(len(probed.get("probed") or []) == 1, "probe-only 应输出探测结果")
+        assert_true(len(probed["probed"][0].get("url_results") or []) == 2, "probe-only 应探测 url_candidates")
+        assert_true(probed["probed"][0].get("accessible") is False, "不可达测试 URL 应标记不可访问")
+        assert_true("test-marker-value" not in probed_json.read_text(encoding="utf-8"), "探测输出不应包含授权 header 原文")
+
+        self.command(
+            "smartedu-downloader-auth-attempt",
+            [
+                sys.executable,
+                self.script("learning-resource-downloader", "scripts", "download_selected.py"),
+                str(selection_json),
+                "--select",
+                "A",
+                "--allow-auth",
+                "--header",
+                "X-Test-Auth: test-marker-value",
+                "--timeout",
+                "1",
+                "-o",
+                str(attempted_json),
+            ],
+            expect_success=False,
+        )
+        attempted = load_json(attempted_json)
+        assert_true(attempted.get("auth_context") is True, "显式授权下载应标记 auth_context")
+        assert_true(len(attempted.get("failures") or []) == 1, "无可达测试 URL 时应记录失败")
+        assert_true("public.pdf" in attempted["failures"][0].get("error", ""), "下载器应尝试 url_candidates")
+        assert_true("test-marker-value" not in attempted_json.read_text(encoding="utf-8"), "下载输出不应包含授权 header 原文")
+
+    def test_library_chain(self) -> None:
+        downloads_dir = self.work_dir / "downloads"
+        library_dir = self.work_dir / "学习资料库"
+        index_dir = self.work_dir / "index"
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        local_pdf = downloads_dir / "四则混合运算练习题.pdf"
+        local_pdf.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n")
+
+        download_json = self.work_dir / "download-result.json"
+        organize_json = self.work_dir / "organize-result.json"
+        index_update_json = self.work_dir / "index-update.json"
+        local_candidates = self.work_dir / "local-candidates.json"
+        local_analyzed = self.work_dir / "local-analyzed.json"
+        local_ranking = self.work_dir / "local-ranking.json"
+
+        write_json(
+            download_json,
+            {
+                "download_schema": "learning-resource-download/v1",
+                "status": "completed",
+                "downloaded_files": [
+                    {
+                        "option_id": "A",
+                        "title": "四则混合运算练习题",
+                        "source_url": "https://example.edu.cn/math.pdf",
+                        "local_file": str(local_pdf),
+                        "format": "pdf",
+                        "resource_type": "习题",
+                        "sha256": "smokehash001",
+                        "candidate": {
+                            "source": "smoke",
+                            "source_name": "示例来源",
+                            "title": "四则混合运算练习题",
+                            "format": "pdf",
+                            "subject": "数学",
+                            "topic": "四则混合运算",
+                            "resource_type": "习题",
+                            "metadata_confidence": 0.82,
+                        },
+                    }
+                ],
+                "skipped": [],
+                "failures": [],
+                "work_dir": str(self.work_dir),
+            },
+        )
+
+        self.command(
+            "learning-library-organizer",
+            [
+                sys.executable,
+                self.script("learning-library-organizer", "scripts", "organize_downloads.py"),
+                str(download_json),
+                "--library-dir",
+                str(library_dir),
+                "--work-dir",
+                str(self.work_dir),
+                "-o",
+                str(organize_json),
+            ],
+        )
+        organize_data = load_json(organize_json)
+        assert_true(organize_data["summary"]["organized"] == 1, "organizer 应归档 1 个文件")
+        assert_true(not list(library_dir.rglob("*.json")), "最终资料库不应包含 JSON 文件")
+
+        self.command(
+            "learning-library-index",
+            [
+                sys.executable,
+                self.script("learning-library-index", "scripts", "update_index.py"),
+                str(organize_json),
+                "--index-dir",
+                str(index_dir),
+                "--library-dir",
+                str(library_dir),
+                "-o",
+                str(index_update_json),
+            ],
+        )
+        assert_true((index_dir / "resources.json").exists(), "index 应生成 resources.json")
+
+        self.command(
+            "learning-library-index-protects-library",
+            [
+                sys.executable,
+                self.script("learning-library-index", "scripts", "update_index.py"),
+                str(organize_json),
+                "--index-dir",
+                str(library_dir / "index"),
+                "--library-dir",
+                str(library_dir),
+            ],
+            expect_success=False,
+        )
+
+        self.command(
+            "local-library-search",
+            [
+                sys.executable,
+                self.script("local-library-search", "scripts", "search_local_library.py"),
+                "--query",
+                "四则混合运算 练习题",
+                "--index-file",
+                str(index_dir / "resources.json"),
+                "-o",
+                str(local_candidates),
+            ],
+        )
+        local_data = load_json(local_candidates)
+        assert_true(len(local_data.get("candidates") or []) == 1, "local search 应命中 1 个本地候选")
+        assert_true(bool(local_data["candidates"][0].get("local_file")), "本地候选应包含 local_file")
+
+        self.command(
+            "local-candidate-analyzer",
+            [
+                sys.executable,
+                self.script("learning-resource-analyzer", "scripts", "analyze_candidates.py"),
+                str(local_candidates),
+                "-o",
+                str(local_analyzed),
+            ],
+        )
+        self.command(
+            "local-candidate-ranker",
+            [
+                sys.executable,
+                self.script("learning-resource-ranker", "scripts", "rank_candidates.py"),
+                str(local_analyzed),
+                "-o",
+                str(local_ranking),
+            ],
+        )
+        ranking_data = load_json(local_ranking)
+        assert_true(ranking_data.get("total") == 1, "本地候选应可进入 ranker")
+
+    def run(self) -> None:
+        self.prepare()
+        self.test_web_to_selection()
+        self.test_source_discovery_and_profiler()
+        self.test_smartedu_resources()
+        self.test_multiformat_analyzer()
+        self.test_smartedu_downloader_auth_policy()
+        self.test_library_chain()
+        print("Smoke tests passed")
+        for name, status in self.results:
+            print(f"- {name}: {status}")
+        print(f"work_dir: {self.work_dir}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run offline smoke tests for learning resource skills")
+    parser.add_argument("--work-dir", default="/tmp/learning-resource-skill-smoke", help="Temporary smoke test work directory")
+    parser.add_argument("--keep-work", action="store_true", help="Keep existing work directory contents")
+    args = parser.parse_args()
+
+    root = Path(__file__).resolve().parents[1]
+    SmokeRunner(root, Path(args.work_dir), args.keep_work).run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

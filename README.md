@@ -22,7 +22,8 @@
   -> 资源质量评分
   -> 用户选择
   -> 下载到本地
-  -> 文件识别与归档
+  -> 文件识别、命名与归档
+  -> 外部索引与去重
   -> 结构化学习资料库
 ```
 
@@ -45,7 +46,7 @@ python3 skills/learning-resource-flow/scripts/run_textbook_flow.py \
 该命令只用于当前 SmartEdu 测试源，会执行：
 
 ```text
-smartedu-textbooks -> learning-resource-analyzer -> learning-resource-ranker
+smartedu-resources 内部教材候选能力 -> learning-resource-analyzer -> learning-resource-ranker
   -> learning-resource-selector
 ```
 
@@ -63,13 +64,13 @@ smartedu-textbooks -> learning-resource-analyzer -> learning-resource-ranker
 - “先看看小学三年级数学教材有哪些” -> 生成多来源教材候选查询计划。
 - “下载人教版小学三年级数学上册” -> 先生成候选并评分，用户确认后下载。
 
-### `smartedu-textbooks`
+### `smartedu-resources`
 
-位置：[skills/smartedu-textbooks](skills/smartedu-textbooks)
+位置：[skills/smartedu-resources](skills/smartedu-resources)
 
-当前已实现的官方资源站来源之一。负责从国家中小学智慧教育平台查找候选资源，输出标准候选资源，支持 token 下载 PDF，并把下载文件整理到资料库。后续新增来源应作为 source skill 接入统一评分流程。
+负责统一分析国家中小学智慧教育平台站内资源，例如教材、课程教学、备课资源、精品课、习题、试卷、实验教学、德育、家庭教育、课后服务、专题、图片、音频、视频等。教材 `tchMaterial` 是 SmartEdu 站内资源类型之一，外部路由仍进入本 skill；早期教材脚本只作为内部兼容调试资产保留。第一版只输出标准候选，不批量下载、不写资料库。
 
-模块调试命令和原爬虫脚本说明见：[docs/smartedu-textbooks-usage.md](docs/smartedu-textbooks-usage.md)
+早期教材脚本说明见：[docs/smartedu-textbooks-usage.md](docs/smartedu-textbooks-usage.md)
 
 候选输出契约：
 
@@ -77,21 +78,20 @@ smartedu-textbooks -> learning-resource-analyzer -> learning-resource-ranker
 learning-resource-candidate/v1
 ```
 
-列出候选：
+栏目画像：
 
 ```bash
-python3 skills/smartedu-textbooks/scripts/fetch_textbooks.py \
-  --stage 小学 --grade 三年级 --subject 数学 --list-only \
-  -o /tmp/smartedu-candidates.json
+python3 skills/smartedu-resources/scripts/smartedu_resources.py \
+  list-catalogs \
+  --library-list-json skills/smartedu-resources/references/sample-librarylist.json
 ```
 
-下载教材：
+详情解析：
 
 ```bash
-SMARTEDU_ACCESS_TOKEN='你的 access token' \
-python3 skills/smartedu-textbooks/scripts/fetch_textbooks.py \
-  --stage 小学 --grade 三年级 --subject 数学 --version 人教版 --volume 上册 \
-  --library-dir 学习资料库
+python3 skills/smartedu-resources/scripts/smartedu_resources.py \
+  candidates-from-detail \
+  --detail-json skills/smartedu-resources/references/sample-detail.json
 ```
 
 ### `learning-resource-ranker`
@@ -136,6 +136,47 @@ learning-resource-selection/v1
 learning-resource-download/v1
 ```
 
+### `learning-library-organizer`
+
+位置：[skills/learning-library-organizer](skills/learning-library-organizer)
+
+负责将已下载资源从工作缓存整理到最终学习资料库，完成安全命名、分类路径生成、低置信度 `待确认/` 归档。它不搜索、不评分、不下载；最终资料库内只写入真实资源文件，归档 JSON 应保存在工作目录或外部索引中。
+
+输出契约：
+
+```text
+learning-library-organize/v1
+```
+
+脚本调用：
+
+```bash
+python3 skills/learning-library-organizer/scripts/organize_downloads.py \
+  download-result.json --library-dir 学习资料库 \
+  -o .learning-resource-work/organize-result.json
+```
+
+### `learning-library-index`
+
+位置：[skills/learning-library-index](skills/learning-library-index)
+
+负责在最终资料库外部维护资源索引、去重记录和来源追踪。它不搜索、不评分、不下载、不移动资料库文件；索引文件默认放在 `.learning-resource-work/index/`，不得写入最终资料库。
+
+输出契约：
+
+```text
+learning-library-index-update/v1
+```
+
+脚本调用：
+
+```bash
+python3 skills/learning-library-index/scripts/update_index.py \
+  organize-result.json --index-dir .learning-resource-work/index \
+  --library-dir 学习资料库 \
+  -o .learning-resource-work/index/index-update-result.json
+```
+
 ### `web-learning-search`
 
 位置：[skills/web-learning-search](skills/web-learning-search)
@@ -156,11 +197,90 @@ python3 skills/web-learning-search/scripts/search_web_resources.py \
   --limit 10
 ```
 
+### `resource-source-discovery`
+
+位置：[skills/resource-source-discovery](skills/resource-source-discovery)
+
+负责从 agent 搜索结果或 `web-learning-search` 候选中识别潜在资源站，做来源级粗筛、风险标记和是否值得深入分析的判断。它不下载、不深度爬取、不替代资源评分；后续可把高价值来源交给 `web-resource-profiler` 或具体 source skill。
+
+输出契约：
+
+```text
+learning-resource-source-discovery/v1
+```
+
+脚本调用：
+
+```bash
+python3 skills/resource-source-discovery/scripts/discover_sources.py \
+  skills/resource-source-discovery/references/sample-web-candidates.json
+```
+
+### `web-resource-profiler`
+
+位置：[skills/web-resource-profiler](skills/web-resource-profiler)
+
+负责对 `resource-source-discovery` 选出的高价值资源站做结构分析，识别 HTML、资源直链、脚本、疑似 API、分页、详情页、登录限制，并给出接入策略。它不批量下载、不做资源最终评分、不写资料库。
+
+输出契约：
+
+```text
+site-profile/v1
+```
+
+脚本调用：
+
+```bash
+python3 skills/web-resource-profiler/scripts/profile_site.py \
+  --url https://example.edu.cn/resources \
+  --html-file skills/web-resource-profiler/references/sample-resource-page.html
+```
+
+### `generic-web-source`
+
+位置：[skills/generic-web-source](skills/generic-web-source)
+
+负责对 `web-resource-profiler` 判定为 `generic_extract` 的简单资源站抽取资源直链候选，例如 PDF、DOCX、PPTX、图片、音频、视频和压缩包。它不下载、不评分、不写资料库；候选仍进入 analyzer、ranker、selector。
+
+输出契约：
+
+```text
+learning-resource-candidate/v1
+```
+
+脚本调用：
+
+```bash
+python3 skills/generic-web-source/scripts/extract_candidates.py \
+  --site-profile-json site-profile.json \
+  -o generic-candidates.json
+```
+
+### `local-library-search`
+
+位置：[skills/local-library-search](skills/local-library-search)
+
+负责基于 `.learning-resource-work/index/resources.json` 检索本地已归档学习资料，并输出标准候选。它是 source skill，只返回候选，不评分、不下载、不修改资料库；本地候选仍需进入 analyzer、ranker、selector。
+
+输出契约：
+
+```text
+learning-resource-candidate/v1
+```
+
+脚本调用：
+
+```bash
+python3 skills/local-library-search/scripts/search_local_library.py \
+  --query "四则混合运算 练习题" \
+  --index-file .learning-resource-work/index/resources.json
+```
+
 ### `learning-resource-analyzer`
 
 位置：[skills/learning-resource-analyzer](skills/learning-resource-analyzer)
 
-负责对候选资源做格式识别、详情解析和内容证据提取，位于搜索和评分之间。第一版支持本地 HTML/TXT/PDF/DOCX/PPTX 的轻量分析，并为图片、音频、视频保留元数据分析入口。
+负责对候选资源做格式识别、详情解析和内容证据提取，位于搜索和评分之间。第一版支持本地 HTML/TXT/PDF/DOCX/PPTX 的轻量分析，支持图片宽高提取，并为音频、视频保留元数据分析入口。
 
 分析输出契约：
 
@@ -214,6 +334,25 @@ python3 skills/learning-resource-analyzer/scripts/analyze_candidates.py \
 - `教材资料库/`
 - `学习资料库/`
 
+## 回归验证
+
+当前提供一个离线 smoke test，用于打包或接入 OpenClaw 前快速验证主要契约：
+
+```bash
+python3 scripts/run_smoke_tests.py
+```
+
+该脚本不联网，会在 `/tmp/learning-resource-skill-smoke` 下构造临时资源，验证：
+
+- 网页搜索结果标准化。
+- analyzer/ranker/selector 链路。
+- DOCX、PPTX、PNG、HTML 风险页等多格式 analyzer 样例。
+- SmartEdu 全平台栏目画像和详情资源项解析。
+- source discovery、资源站结构分析和通用网页资源抽取。
+- 下载结果归档到最终资料库。
+- 外部索引创建和资料库内部写入保护。
+- 基于索引的本地资料库检索。
+
 ## 设计约束
 
 - 所有 skill 的 `SKILL.md`、示例、面向 agent 的说明和 UI 元数据以中文为基本语言。
@@ -228,17 +367,26 @@ python3 skills/learning-resource-analyzer/scripts/analyze_candidates.py \
 
 - SmartEdu 官方教材爬虫。
 - `smartedu-textbooks` 第一版。
+- `smartedu-resources` 第一版。
 - `learning-resource-intent` 第一版。
 - `learning-resource-flow` 第一版。
 - `learning-resource-ranker` 第一版。
 - `learning-resource-selector` 第一版。
 - `learning-resource-downloader` 第一版。
+- `learning-library-organizer` 第一版。
+- `learning-library-index` 第一版。
+- `local-library-search` 第一版。
+- `resource-source-discovery` 第一版。
+- `web-resource-profiler` 第一版。
+- `generic-web-source` 第一版。
 - `web-learning-search` 第一版。
 - `learning-resource-analyzer` 第一版。
 - 标准候选资源契约初版。
+- 离线 smoke test 第一版。
 - 项目计划文档和入口文档。
 
 下一步：
 
-- 创建 `learning-library-organizer`，处理下载文件识别、命名和资料库归档。
-- 设计资料库整理和外部索引 skill。
+- 扩展更多 source skills，例如课程、课件、视频、音频、儿童百科等资源来源。
+- 将 smoke test 扩展为更系统的回归测试集。
+- 继续增强 analyzer 的真实内容识别，例如 PDF 文本提取、图片 OCR、音视频字幕和媒体内容证据。

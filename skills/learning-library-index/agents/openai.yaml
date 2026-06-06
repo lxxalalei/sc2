@@ -1,0 +1,4 @@
+interface:
+  display_name: "学习资料库索引"
+  short_description: "维护资料库外部索引和去重记录"
+  default_prompt: "使用 $learning-library-index 为已归档学习资源更新外部索引和去重记录。"

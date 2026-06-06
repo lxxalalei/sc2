@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import urllib.parse
@@ -177,7 +178,30 @@ def image_size(path: Path) -> tuple[int | None, int | None]:
         with Image.open(path) as image:
             return image.size
     except Exception:
+        pass
+    try:
+        data = path.read_bytes()
+        if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+            return struct.unpack(">II", data[16:24])
+        if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+            if len(data) >= 10:
+                return struct.unpack("<HH", data[6:10])
+        if data.startswith(b"\xff\xd8"):
+            index = 2
+            while index + 9 < len(data):
+                if data[index] != 0xFF:
+                    index += 1
+                    continue
+                marker = data[index + 1]
+                block_length = int.from_bytes(data[index + 2 : index + 4], "big")
+                if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                    height = int.from_bytes(data[index + 5 : index + 7], "big")
+                    width = int.from_bytes(data[index + 7 : index + 9], "big")
+                    return width, height
+                index += 2 + block_length
+    except Exception:
         return None, None
+    return None, None
 
 
 def ffprobe(path: Path) -> dict[str, Any]:

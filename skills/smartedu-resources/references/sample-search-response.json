@@ -1,0 +1,31 @@
+{
+  "code": 0,
+  "data": {
+    "items": [
+      {
+        "id": "qc-math-001",
+        "title": "小学数学 三年级 上册 分数的初步认识",
+        "description": "国家中小学智慧教育平台课程资源，包含同步学习视频和配套资料。",
+        "catalog": "qualityCourse",
+        "subCatalog": "course",
+        "contentType": "NDR_NationalLesson",
+        "resourceTypeName": "视频",
+        "stage": "小学",
+        "grade": "三年级",
+        "subject": "数学",
+        "providerName": "国家中小学智慧教育平台"
+      },
+      {
+        "resource_id": "paper-math-001",
+        "content_name": "三年级数学基础练习",
+        "summary": "适合三年级学生的基础性作业资源。",
+        "tab_code": "basicWork",
+        "content_type": "NDR_OnlineJudge_Paper",
+        "resource_type_name": "习题",
+        "format": "pdf",
+        "grade_name": "三年级",
+        "subject_name": "数学"
+      }
+    ]
+  }
+}

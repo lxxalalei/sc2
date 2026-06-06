@@ -56,7 +56,7 @@
 {
   "task_id": "task_001",
   "task_type": "source_search | local_search | candidate_list | direct_download",
-  "target_skill": "smartedu-textbooks | web-learning-search | local-library-search",
+  "target_skill": "smartedu-resources | web-learning-search | local-library-search",
   "action": "search | list-only | download",
   "priority": 1,
   "query": "",
@@ -108,14 +108,27 @@
 
 `execution_tasks` 可以包含多个来源任务。不要把某一类资源永久绑定到单一来源。
 
+`smartedu-resources` 是国家中小学智慧教育平台资源总入口，适合教材、课程教学、备课资源、精品课、习题、试卷、实验教学、德育、家庭教育、课后服务、专题、图片、音频、视频等官方资源。教材是 resources 的一部分，其中 `tchMaterial` 教材 PDF 是站内教材资源分支，外部仍统一路由到 `smartedu-resources`。
+
+如果项目已有本地资料库外部索引，通常应先生成一个 `local-library-search` 任务，让 agent 检查本地是否已有可用资源。该任务不替代外部搜索；本地无命中或质量不足时，继续执行其他 source tasks。
+
 例如用户请求“找小学三年级数学教材”时，可以同时生成：
 
 ```json
 [
   {
+    "task_id": "task_000",
+    "task_type": "local_search",
+    "target_skill": "local-library-search",
+    "action": "search",
+    "query": "小学三年级数学教材",
+    "filters": {"stage": "小学", "grade": "三年级", "subject": "数学", "resource_types": ["教材"]},
+    "download_policy": "never"
+  },
+  {
     "task_id": "task_001",
     "task_type": "candidate_list",
-    "target_skill": "smartedu-textbooks",
+    "target_skill": "smartedu-resources",
     "action": "list-only",
     "query": "小学三年级数学教材",
     "filters": {"stage": "小学", "grade": "三年级", "subject": "数学"},
@@ -133,7 +146,7 @@
 ]
 ```
 
-当前 `smartedu-textbooks` 是已实现的官方教材来源之一。后续新增出版社官网、地方教育平台或本地资料库来源后，应同样作为候选来源加入任务列表。
+当前 `smartedu-resources` 是已实现的 SmartEdu 官方资源总入口，`tchMaterial` 教材是 `smartedu-resources` 内部的一类资源分支。后续新增出版社官网、地方教育平台或本地资料库来源后，应同样作为候选来源加入任务列表。
 
 ## 示例
 

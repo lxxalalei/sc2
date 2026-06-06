@@ -1,0 +1,52 @@
+[
+  {
+    "id": "e4270790-dae4-4b75-95c4-d56989892774",
+    "name": "同步课堂",
+    "type": "syncClassroom",
+    "catalog": "syncClassroom",
+    "sub_catalog": "course",
+    "sub_catalog_name": "课程教学",
+    "catalog_name": "课程教学"
+  },
+  {
+    "id": "261d3f49-af55-49a0-b0f7-559dfcce514a",
+    "name": "备课资源",
+    "type": "prepare_lesson",
+    "catalog": "syncClassroom",
+    "sub_catalog": "prepare_lesson",
+    "sub_catalog_name": "备课资源",
+    "catalog_name": "课程教学"
+  },
+  {
+    "id": "bd9ed3b4-00d8-4201-a3a9-87431348a15f",
+    "name": "精品课",
+    "type": "qualityCourse",
+    "catalog": "syncClassroom",
+    "sub_catalog": "course",
+    "sub_catalog_name": "课程教学",
+    "catalog_name": "课程教学"
+  },
+  {
+    "id": "cb9a4539-848a-453f-8205-39230f157a7d",
+    "name": "教材",
+    "type": "tchMaterial",
+    "catalog": "tchMaterial",
+    "catalog_name": "教材"
+  },
+  {
+    "id": "6badb247-7287-4b69-9a7a-15a9ee0ec7e9",
+    "name": "实验教学",
+    "type": "experiment",
+    "catalog": "syncClassroom",
+    "sub_catalog": "experiment",
+    "sub_catalog_name": "实验教学",
+    "catalog_name": "课程教学"
+  },
+  {
+    "id": "c54a8759-ce1d-42f5-a36d-30af89479a5b",
+    "name": "家庭教育观念",
+    "type": "jygn",
+    "catalog": "family",
+    "catalog_name": "家庭教育"
+  }
+]

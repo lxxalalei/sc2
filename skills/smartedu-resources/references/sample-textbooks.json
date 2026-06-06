@@ -1,0 +1,36 @@
+[
+  {
+    "id": "tch-material-math-g3-a",
+    "title": "义务教育教科书 数学 三年级 上册",
+    "format": "pdf",
+    "size": "2048",
+    "stage": "小学",
+    "subject": "数学",
+    "version": "人教版",
+    "grade": "三年级",
+    "volume": "上册",
+    "category": "教材",
+    "providers": ["人民教育出版社"],
+    "thumbnail": "https://example.invalid/math-g3-a.jpg",
+    "preview_count": 3,
+    "preview_urls": [],
+    "detail_page": "https://basic.smartedu.cn/tchMaterial/detail?contentType=assets_document&contentId=tch-material-math-g3-a&catalogType=tchMaterial&subCatalog=tchMaterial"
+  },
+  {
+    "id": "tch-material-cn-g3-a",
+    "title": "义务教育教科书 语文 三年级 上册",
+    "format": "pdf",
+    "size": "2048",
+    "stage": "小学",
+    "subject": "语文",
+    "version": "统编版",
+    "grade": "三年级",
+    "volume": "上册",
+    "category": "教材",
+    "providers": ["人民教育出版社"],
+    "thumbnail": "https://example.invalid/cn-g3-a.jpg",
+    "preview_count": 3,
+    "preview_urls": [],
+    "detail_page": "https://basic.smartedu.cn/tchMaterial/detail?contentType=assets_document&contentId=tch-material-cn-g3-a&catalogType=tchMaterial&subCatalog=tchMaterial"
+  }
+]

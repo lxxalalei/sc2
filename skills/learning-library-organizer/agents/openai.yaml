@@ -1,0 +1,4 @@
+interface:
+  display_name: "学习资料库归档"
+  short_description: "整理已下载资源到最终资料库"
+  default_prompt: "使用 $learning-library-organizer 将已下载学习资源规范命名、分类并归档到学习资料库。"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "资源站结构分析"
+  short_description: "分析资源站结构和接入策略"
+  default_prompt: "使用 $web-resource-profiler 分析资源站结构、接口线索和接入建议。"

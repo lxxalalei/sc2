@@ -1,0 +1,32 @@
+{
+  "download_schema": "learning-resource-download/v1",
+  "status": "completed",
+  "requested": ["A"],
+  "downloaded_files": [
+    {
+      "option_id": "A",
+      "title": "四则混合运算练习题",
+      "source_url": "https://example.edu.cn/math.pdf",
+      "local_file": "references/sample.pdf",
+      "format": "pdf",
+      "resource_type": "习题",
+      "size": 1200,
+      "sha256": "sample",
+      "content_type": "application/pdf",
+      "candidate": {
+        "source": "example-source",
+        "source_name": "示例来源",
+        "title": "四则混合运算练习题",
+        "format": "pdf",
+        "subject": "数学",
+        "topic": "四则混合运算",
+        "resource_type": "习题",
+        "metadata_confidence": 0.78,
+        "raw": {}
+      }
+    }
+  ],
+  "skipped": [],
+  "failures": [],
+  "work_dir": ".learning-resource-work"
+}

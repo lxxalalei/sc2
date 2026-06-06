@@ -86,7 +86,7 @@ def score_relevance(intent: dict[str, Any], candidate: dict[str, Any]) -> tuple[
         reasons.append(f"领域或学科匹配{intent.get('subject') or intent.get('learning_domain')}")
 
     resource_types = as_list(intent.get("resource_types"))
-    if not resource_types and candidate.get("source") == "smartedu-textbooks":
+    if not resource_types and candidate.get("resource_type") == "教材":
         resource_types = ["教材"]
     if contains_any(blob, resource_types):
         score += 7

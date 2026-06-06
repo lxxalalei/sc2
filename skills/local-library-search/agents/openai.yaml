@@ -1,0 +1,4 @@
+interface:
+  display_name: "本地资料库检索"
+  short_description: "检索已有学习资料候选"
+  default_prompt: "使用 $local-library-search 从本地学习资料库外部索引中检索已有资源候选。"

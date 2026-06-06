@@ -1,9 +1,15 @@
 ---
 name: smartedu-textbooks
-description: 从国家中小学智慧教育平台 / SmartEdu 查找、下载并整理中国中小学教材 PDF。当用户要求查找、获取、爬取、下载或建立教材/电子教材本地资料库时使用，例如"帮我查找小学三年级教材"、"下载人教版小学数学上册"或"整理一份本地教材资料库"。
+description: SmartEdu 教材 PDF 早期兼容适配层，仅作为 smartedu-resources 站点级 skill 的内部实现资产保留。外部用户请求教材、课程、课件、习题、试卷、视频、音频、图片或其他 SmartEdu 站内资源时，应优先调用 smartedu-resources，不要把本 skill 当作独立资源站来源。
 ---
 
-# SmartEdu 教材下载
+# SmartEdu 教材内部适配层
+
+## 当前定位
+
+本 skill 是项目早期为跑通“需求分析 -> 候选 -> 下载 -> 整理”链路而创建的教材 PDF 适配层。后续架构中，SmartEdu 应作为一个站点级 source，由 `smartedu-resources` 统一承接站内资源能力；教材 `tchMaterial` 只是其中一种资源类型。
+
+面向 OpenClaw 或外部任务路由时，不要直接选择本 skill。若确实需要复用早期教材下载脚本，应由 `smartedu-resources` 在内部实现层调用或迁移这些脚本。
 
 ## 核心规则
 

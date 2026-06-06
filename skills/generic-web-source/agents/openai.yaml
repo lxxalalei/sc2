@@ -1,0 +1,4 @@
+interface:
+  display_name: "通用网页资源抽取"
+  short_description: "从简单资源站抽取资源直链候选"
+  default_prompt: "使用 $generic-web-source 从站点画像或网页 HTML 中抽取学习资源直链候选。"

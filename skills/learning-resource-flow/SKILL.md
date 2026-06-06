@@ -20,12 +20,18 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 ## 当前可用子技能
 
 - `learning-resource-intent`：需求理解、追问、生成 `execution_tasks`。
-- `smartedu-textbooks`：国家中小学智慧教育平台官方教材候选和下载。
+- `smartedu-resources`：国家中小学智慧教育平台站点级资源入口，统一处理站内教材、课程、课件、习题、试卷、视频、音频、图片等候选。
 - `web-learning-search`：通用网页学习资源候选搜索。
+- `resource-source-discovery`：从通用搜索结果中识别值得深入分析的资源站候选。
+- `web-resource-profiler`：对高价值资源站做结构分析和接入策略判断。
+- `generic-web-source`：从简单资源站画像或 HTML 中抽取资源直链候选。
 - `learning-resource-analyzer`：候选详情分析。
 - `learning-resource-ranker`：候选质量评分排序。
 - `learning-resource-selector`：把评分结果整理成用户可选择的清单。
 - `learning-resource-downloader`：根据用户选择下载到工作缓存目录。
+- `learning-library-organizer`：将已下载文件规范命名、分类并归档到最终资料库。
+- `learning-library-index`：在资料库外部维护索引、去重记录和来源追踪。
+- `local-library-search`：基于外部索引检索本地已有学习资源候选。
 
 ## 标准调用链
 
@@ -43,15 +49,21 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 ```text
 用户请求
   -> learning-resource-intent
-  -> source skills 候选搜索
+  -> local-library-search           # 若已有外部索引，先检索本地候选
+  -> source skills 候选搜索         # SmartEdu 站点统一走 smartedu-resources
+  -> resource-source-discovery      # 对通用搜索结果做来源级粗筛
+  -> web-resource-profiler          # 对高价值未知资源站做结构分析
+  -> generic-web-source             # 对 profiler 判定可通用抽取的来源生成候选
   -> learning-resource-analyzer
   -> learning-resource-ranker
   -> learning-resource-selector
   -> 给用户展示排序后的候选
   -> 用户确认后进入 learning-resource-downloader
+  -> 下载成功后进入 learning-library-organizer
+  -> 归档成功后进入 learning-library-index
 ```
 
-当前已实现的相关来源包括 `smartedu-textbooks`，它应被看作普通 source skill。后续新增其他来源后，应一起进入候选和评分。
+当前 SmartEdu 站点来源统一由 `smartedu-resources` 承接。早期教材脚本只作为该站点内部适配能力保留，不应作为外部独立来源参与路由。后续新增其他资源站后，应和 `smartedu-resources` 一起进入候选和评分。
 
 如果用户直接说“下载人教版小学三年级数学上册”，也应先确认候选唯一性；候选唯一、质量高且来源明确时，才进入下载。
 
@@ -69,12 +81,19 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 ```text
 用户请求
   -> learning-resource-intent
+  -> local-library-search           # 若已有外部索引，先检索本地候选
+  -> smartedu-resources             # 若需求适合 SmartEdu 官方平台资源
   -> web-learning-search
+  -> resource-source-discovery      # 找出值得 profiler 深挖的资源站
+  -> web-resource-profiler
+  -> generic-web-source             # 对简单资源站抽取资源直链候选
   -> learning-resource-analyzer
   -> learning-resource-ranker
   -> learning-resource-selector
   -> 给用户展示排序后的候选
   -> 用户确认后进入 learning-resource-downloader
+  -> 下载成功后进入 learning-library-organizer
+  -> 归档成功后进入 learning-library-index
 ```
 
 ## 追问规则
@@ -122,7 +141,7 @@ python3 skills/learning-resource-flow/scripts/run_textbook_flow.py \
 该脚本会执行：
 
 ```text
-smartedu-textbooks list-only  # 当前测试 source
+smartedu-resources 内部教材候选能力
   -> learning-resource-analyzer
   -> learning-resource-ranker
   -> learning-resource-selector
@@ -140,3 +159,15 @@ smartedu-textbooks list-only  # 当前测试 source
 4. 是否需要用户确认下载。
 
 不要把 JSON 缓存、临时工作目录、manifest 或 token 展示为最终资料库内容。
+
+下载后的归档结果应只把真实资源文件写入最终资料库；归档摘要、索引和调试 JSON 留在工作目录或外部索引中。
+
+索引更新必须使用资料库外部目录，例如 `.learning-resource-work/index/`；不要在最终资料库中写入索引文件。
+
+如果存在本地索引，搜索外部来源前应优先调用 `local-library-search` 生成本地候选；本地候选仍需进入 analyzer、ranker、selector，不要绕过统一评分和用户选择。
+
+通用搜索结果较多时，应先用 `resource-source-discovery` 做来源级粗筛。它只判断“哪个站值得深入分析”，不替代资源级 analyzer/ranker。
+
+`web-resource-profiler` 只分析 discovery 选出的高价值来源，用于判断是否可用通用网页抽取、是否需要独立 source skill，或是否应放弃。
+
+当 `web-resource-profiler` 输出 `crawl_strategy=generic_extract` 且存在 `resource_links` 时，调用 `generic-web-source` 将资源直链转换为标准候选；当输出 `dedicated_source_skill`、`profile_deeper` 或 `reject` 时，不要强行通用抽取。

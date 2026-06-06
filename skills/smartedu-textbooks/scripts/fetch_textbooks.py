@@ -112,7 +112,7 @@ def standard_candidate(record: dict[str, Any], local_file: str | None = None) ->
     providers = record.get("providers") or []
     provider = "/".join(providers) if providers else ""
     candidate = {
-        "source": "smartedu-textbooks",
+        "source": "smartedu-resources",
         "source_name": "国家中小学智慧教育平台",
         "source_url": record.get("detail_page"),
         "resource_id": record.get("id"),
@@ -132,6 +132,7 @@ def standard_candidate(record: dict[str, Any], local_file: str | None = None) ->
         "size": record.get("size"),
         "metadata_confidence": metadata_confidence(record),
         "raw": {
+            "internal_adapter": "tchMaterial",
             "id": record.get("id"),
             "thumbnail": record.get("thumbnail"),
             "preview_count": record.get("preview_count"),

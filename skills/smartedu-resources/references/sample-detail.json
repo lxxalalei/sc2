@@ -1,0 +1,64 @@
+{
+  "id": "sample-smartedu-resource",
+  "title": "三年级数学分数初步认识",
+  "description": "课程教学示例资源",
+  "resource_type_code": "assets_video",
+  "resource_type_code_name": "视频",
+  "provider_list": [
+    {
+      "name": "国家中小学智慧教育平台"
+    }
+  ],
+  "tag_list": [
+    {
+      "tag_dimension_id": "zxxxd",
+      "tag_name": "小学"
+    },
+    {
+      "tag_dimension_id": "zxxxk",
+      "tag_name": "数学"
+    },
+    {
+      "tag_dimension_id": "zxxnj",
+      "tag_name": "三年级"
+    }
+  ],
+  "ti_items": [
+    {
+      "ti_format": "m3u8",
+      "lc_ti_format": "application/x-mpegURL",
+      "ti_file_flag": "href-m3u8",
+      "ti_storage": "cs_path:${ref-path}/edu_product/esp/assets/sample.pkg/video/main.m3u8",
+      "ti_storages": [],
+      "custom_properties": {
+        "identification": true
+      }
+    },
+    {
+      "ti_format": "pdf",
+      "lc_ti_format": "pdf",
+      "ti_file_flag": "source",
+      "ti_storage": "cs_path:${ref-path}/edu_product/esp/assets/sample.pkg/分数初步认识讲义.pdf",
+      "ti_storages": [],
+      "custom_properties": {
+        "identification": true,
+        "requirements": [
+          {
+            "name": "FileSize",
+            "value": "1024"
+          }
+        ]
+      }
+    },
+    {
+      "ti_format": "jpg",
+      "lc_ti_format": "image/jpg",
+      "ti_file_flag": "thumbnail_1",
+      "ti_storage": "cs_path:${ref-path}/edu_product/esp/assets/sample.pkg/cover.jpg",
+      "ti_storages": [],
+      "custom_properties": {
+        "identification": true
+      }
+    }
+  ]
+}

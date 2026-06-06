@@ -1,0 +1,4 @@
+interface:
+  display_name: "SmartEdu 站点资源"
+  short_description: "统一处理智慧教育平台站内资源"
+  default_prompt: "使用 $smartedu-resources 分析 SmartEdu 站点栏目、搜索结果或详情 JSON，生成教材、课程、课件、习题、试卷、视频、音频、图片、文档等候选资源。"

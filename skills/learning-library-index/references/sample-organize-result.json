@@ -1,0 +1,33 @@
+{
+  "organize_schema": "learning-library-organize/v1",
+  "status": "completed",
+  "library_dir": "学习资料库",
+  "organized_files": [
+    {
+      "option_id": "A",
+      "title": "四则混合运算练习题",
+      "source_url": "https://example.edu.cn/math.pdf",
+      "original_file": ".learning-resource-work/downloads/math.pdf",
+      "library_file": "学习资料库/未分学段/未分年级/数学/四则混合运算/示例来源/四则混合运算练习题_d2a1samp.pdf",
+      "format": "pdf",
+      "resource_type": "习题",
+      "classification": {
+        "stage_or_age": "未分学段",
+        "grade_or_phase": "未分年级",
+        "domain_or_subject": "数学",
+        "topic_or_type": "四则混合运算",
+        "source_or_version": "示例来源"
+      },
+      "classification_confidence": 0.78,
+      "needs_review": false,
+      "sha256": "d2a1samplehash"
+    }
+  ],
+  "failures": [],
+  "summary": {
+    "input_files": 1,
+    "organized": 1,
+    "failed": 0,
+    "needs_review": 0
+  }
+}

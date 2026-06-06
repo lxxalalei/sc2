@@ -18,6 +18,7 @@
    - 下一步任务
    - 重要设计决策
 4. 最终资料库目录只放学习资源文件；索引、JSON、manifest、日志和缓存应放在工作目录或外部索引中。
+5. 打包或较大改动后，优先运行 `python3 scripts/run_smoke_tests.py` 做离线回归验证。
 
 ## 当前主线
 
@@ -26,14 +27,37 @@
 ```text
 用户需求
   -> 需求理解与澄清
+  -> 本地资料库候选检索
   -> 多来源搜索
-  -> 资源质量评分
+  -> 资源站发现与粗筛
+  -> 资源站结构分析
+  -> 资源分析与质量评分
   -> 用户选择
-  -> 下载到本地
-  -> 文件识别与归档
+  -> 下载到工作缓存
+  -> 文件识别、命名与归档
+  -> 外部索引与去重
   -> 结构化学习资料库
 ```
 
-当前已完成第一版官方教材来源 skill：
+当前已完成第一版主链路 skills：
 
-[skills/smartedu-textbooks](skills/smartedu-textbooks)
+- [skills/learning-resource-flow](skills/learning-resource-flow)
+- [skills/learning-resource-intent](skills/learning-resource-intent)
+- [skills/smartedu-resources](skills/smartedu-resources)
+- [skills/web-learning-search](skills/web-learning-search)
+- [skills/learning-resource-analyzer](skills/learning-resource-analyzer)
+- [skills/learning-resource-ranker](skills/learning-resource-ranker)
+- [skills/learning-resource-selector](skills/learning-resource-selector)
+- [skills/learning-resource-downloader](skills/learning-resource-downloader)
+- [skills/learning-library-organizer](skills/learning-library-organizer)
+- [skills/learning-library-index](skills/learning-library-index)
+- [skills/local-library-search](skills/local-library-search)
+- [skills/resource-source-discovery](skills/resource-source-discovery)
+- [skills/web-resource-profiler](skills/web-resource-profiler)
+- [skills/generic-web-source](skills/generic-web-source)
+
+下一步重点是继续完善 `smartedu-resources` 的站点级资源掌控能力，包括真实环境检索联调、搜索候选到详情 JSON 的追踪、教材 `tchMaterial` 内部适配迁移和更多栏目适配，同时增强 analyzer 的真实内容识别能力，例如 PDF 文本、图片 OCR、音视频字幕和媒体内容证据。
+
+离线回归入口：
+
+[scripts/run_smoke_tests.py](scripts/run_smoke_tests.py)

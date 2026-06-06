@@ -241,7 +241,7 @@
   "resource_types": ["教材"],
   "execution_tasks": [
     {
-      "target_skill": "smartedu-textbooks",
+      "target_skill": "smartedu-resources",
       "action": "list-only",
       "query": "小学三年级数学教材",
       "filters": {"stage": "小学", "grade": "三年级", "subject": "数学"},
@@ -280,7 +280,7 @@
   "resource_types": ["教材"],
   "execution_tasks": [
     {
-      "target_skill": "smartedu-textbooks",
+      "target_skill": "smartedu-resources",
       "action": "list-only",
       "query": "人教版小学三年级数学上册教材",
       "filters": {"stage": "小学", "grade": "三年级", "subject": "数学", "version": "人教版", "volume": "上册"},
