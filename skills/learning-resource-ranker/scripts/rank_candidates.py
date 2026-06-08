@@ -22,6 +22,9 @@ DEFAULT_WEIGHTS = {
 }
 
 SUSPICIOUS_TERMS = ["破解", "成人", "博彩", "贷款", "下载器", "高速下载", "注册机", "破解版", "性感"]
+PRINTABLE_FORMATS = {"pdf", "doc", "docx", "ppt", "pptx", "jpg", "jpeg", "png"}
+AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "flac", "audio"}
+VIDEO_FORMATS = {"mp4", "mov", "avi", "mkv", "webm", "video"}
 
 
 def as_list(value: Any) -> list[Any]:
@@ -175,6 +178,15 @@ def score_accessibility(candidate: dict[str, Any]) -> tuple[float, list[str], li
     return min(score, DEFAULT_WEIGHTS["accessibility"]), reasons, warnings
 
 
+def ranking_preferences(intent: dict[str, Any]) -> dict[str, list[str]]:
+    profile = intent.get("ranking_profile") if isinstance(intent.get("ranking_profile"), dict) else {}
+    return {
+        "prefer": [norm(item) for item in as_list(profile.get("prefer"))],
+        "avoid": [norm(item) for item in as_list(profile.get("avoid"))],
+        "must_match": [norm(item) for item in as_list(profile.get("must_match"))],
+    }
+
+
 def score_format_fit(intent: dict[str, Any], candidate: dict[str, Any]) -> tuple[float, list[str], list[str]]:
     score = 3.0
     reasons: list[str] = []
@@ -182,6 +194,10 @@ def score_format_fit(intent: dict[str, Any], candidate: dict[str, Any]) -> tuple
     candidate_format = norm(candidate.get("format") or candidate.get("resource_type"))
     preferences = [norm(item) for item in as_list(intent.get("format_preferences"))]
     resource_types = [norm(item) for item in as_list(intent.get("resource_types"))]
+    goal = norm(intent.get("resource_goal"))
+    constraints = [norm(item) for item in as_list(intent.get("constraints"))]
+    prefer = ranking_preferences(intent)["prefer"]
+    blob = text_blob(candidate)
 
     if preferences and any(pref.lower().replace("/", "") in candidate_format.replace("/", "") for pref in preferences):
         score += 5
@@ -194,6 +210,15 @@ def score_format_fit(intent: dict[str, Any], candidate: dict[str, Any]) -> tuple
 
     if resource_types and any(item in text_blob(candidate) for item in resource_types):
         score += 2
+    if ("可打印" in constraints or "适合打印" in constraints or "可打印" in prefer or "可打印" in blob or "练习" in goal) and candidate_format in PRINTABLE_FORMATS:
+        score += 2
+        reasons.append("格式适合打印或练习使用")
+    if ("听赏" in goal or "音频" in resource_types) and candidate_format in AUDIO_FORMATS:
+        score += 2
+        reasons.append("格式适合听赏")
+    if "视频" in resource_types and candidate_format in VIDEO_FORMATS:
+        score += 2
+        reasons.append("格式适合视频学习")
     return min(score, DEFAULT_WEIGHTS["format_fit"]), reasons, warnings
 
 
@@ -204,12 +229,61 @@ def score_safety(candidate: dict[str, Any]) -> tuple[float, list[str], list[str]
     warnings.extend(
         str(item)
         for item in as_list(analysis.get("warnings"))
-        if item and any(term in str(item) for term in SUSPICIOUS_TERMS)
+        if item
+        and (
+            any(term in str(item) for term in SUSPICIOUS_TERMS)
+            or any(term in str(item) for term in ["登录", "权限", "付费", "格式与实际内容不一致"])
+        )
     )
     warnings = list(dict.fromkeys(warnings))
     score = DEFAULT_WEIGHTS["safety"] - min(len(warnings) * 4, DEFAULT_WEIGHTS["safety"])
     reasons = ["未发现明显儿童内容风险"] if not warnings else []
     return max(score, 0.0), reasons, warnings
+
+
+def score_user_preferences(intent: dict[str, Any], candidate: dict[str, Any]) -> tuple[float, list[str], list[str]]:
+    prefs = ranking_preferences(intent)
+    blob = text_blob(candidate) + " " + norm(candidate.get("source_url"))
+    reasons: list[str] = []
+    warnings: list[str] = []
+    score = 0.0
+    for value in prefs["prefer"]:
+        if value and value in blob:
+            score += 1.5
+            reasons.append(f"符合偏好：{value}")
+    for value in prefs["avoid"]:
+        if value and value in blob:
+            score -= 3
+            warnings.append(f"命中需避免项：{value}")
+    return max(min(score, 5.0), -8.0), reasons, warnings
+
+
+def score_content_evidence(intent: dict[str, Any], candidate: dict[str, Any]) -> tuple[float, list[str], list[str]]:
+    analysis = (candidate.get("raw") or {}).get("analysis") or {}
+    signals = analysis.get("signals") if isinstance(analysis.get("signals"), dict) else {}
+    level = signals.get("content_evidence_level")
+    text_length = int(signals.get("text_length") or 0)
+    page_count = signals.get("page_count")
+    duration = signals.get("duration_seconds")
+    reasons: list[str] = []
+    warnings: list[str] = []
+    score = 0.0
+    if level == "strong":
+        score += 5
+        reasons.append("已提取到较充分内容证据")
+    elif level == "basic":
+        score += 3
+        reasons.append("已提取到基础内容证据")
+    elif page_count or duration:
+        score += 2
+        reasons.append("具备页数或时长等基础证据")
+    else:
+        warnings.append("缺少可验证的资源内容证据")
+
+    resource_types = [norm(item) for item in as_list(intent.get("resource_types"))]
+    if ("习题" in resource_types or norm(intent.get("resource_goal")) == "练习") and text_length < 40 and not page_count:
+        warnings.append("练习类资源缺少题目文本或页数证据")
+    return score, reasons, warnings
 
 
 def score_metadata(candidate: dict[str, Any]) -> tuple[float, list[str], list[str]]:
@@ -259,9 +333,11 @@ def rank_one(intent: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any
     format_fit, r_format, w_format = score_format_fit(intent, candidate)
     safety, r_safety, w_safety = score_safety(candidate)
     metadata_quality, r_meta, w_meta = score_metadata(candidate)
+    content_evidence, r_content, w_content = score_content_evidence(intent, candidate)
+    preference_fit, r_pref, w_pref = score_user_preferences(intent, candidate)
 
-    reasons.extend(r + r_age + r_auth + r_access + r_format + r_safety + r_meta)
-    warnings.extend(w_age + w_access + w_format + w_safety + w_meta)
+    reasons.extend(r + r_age + r_auth + r_access + r_format + r_safety + r_meta + r_content + r_pref)
+    warnings.extend(w_age + w_access + w_format + w_safety + w_meta + w_content + w_pref)
 
     breakdown = {
         "relevance": round(relevance, 2),
@@ -271,8 +347,10 @@ def rank_one(intent: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any
         "format_fit": round(format_fit, 2),
         "safety": round(safety, 2),
         "metadata_quality": round(metadata_quality, 2),
+        "content_evidence": round(content_evidence, 2),
+        "preference_fit": round(preference_fit, 2),
     }
-    final_score = round(sum(breakdown.values()), 2)
+    final_score = round(min(max(sum(breakdown.values()), 0.0), 100.0), 2)
     level = quality_level(final_score)
     return {
         "final_score": final_score,
@@ -291,6 +369,9 @@ def extract_payload(data: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str
         intent = dict(data["filters"])
     if not intent:
         intent = data
+    elif data.get("ranking_profile") and "ranking_profile" not in intent:
+        intent = dict(intent)
+        intent["ranking_profile"] = data["ranking_profile"]
     candidates = data.get("candidates") or data.get("ranked_candidates") or []
     if not isinstance(candidates, list):
         raise ValueError("candidates must be a list")

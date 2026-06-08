@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.server
 import json
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,21 @@ def write_png(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     png_2x1 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
     path.write_bytes(base64.b64decode(png_2x1))
+
+
+def start_static_server(directory: Path) -> tuple[http.server.ThreadingHTTPServer, threading.Thread, str]:
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, directory=str(directory), **kwargs)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    return server, thread, f"http://{host}:{port}"
 
 
 class SmokeRunner:
@@ -276,6 +293,171 @@ class SmokeRunner:
         assert_true(bool(selection.get("work_files", {}).get("source_discovery")), "source-first flow 应记录来源发现工作文件")
         assert_true(bool(selection.get("work_files", {}).get("generic_candidates")), "source-first flow 应记录通用抽取候选文件")
         assert_true(selection.get("shown_count", 0) >= 1, "source-first flow 应生成用户可选候选")
+
+    def test_resource_flow_local_first(self) -> None:
+        intent_json = self.work_dir / "local-first-intent.json"
+        index_dir = self.work_dir / "local-first-index"
+        library_dir = self.work_dir / "local-first-library"
+        local_pdf = library_dir / "小学低年级" / "二年级" / "数学" / "四则混合运算" / "本地资料库" / "四则混合运算练习题_abcd1234.pdf"
+        local_pdf.parent.mkdir(parents=True, exist_ok=True)
+        local_pdf.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n")
+        index_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            index_dir / "resources.json",
+            {
+                "index_schema": "learning-library-index/v1",
+                "resources": [
+                    {
+                        "resource_key": "local-flow-001",
+                        "title": "四则混合运算练习题",
+                        "library_file": str(local_pdf),
+                        "format": "pdf",
+                        "resource_type": "习题",
+                        "classification": {
+                            "stage_or_age": "小学低年级",
+                            "grade_or_phase": "二年级",
+                            "domain_or_subject": "数学",
+                            "topic_or_type": "四则混合运算",
+                            "source_or_version": "本地资料库",
+                        },
+                        "classification_confidence": 0.9,
+                        "needs_review": False,
+                        "source_url": "local://四则混合运算练习题",
+                        "sha256": "localflowsha001",
+                    }
+                ],
+            },
+        )
+        write_json(
+            intent_json,
+            {
+                "intent_schema": "learning-resource-intent/v1",
+                "status": "ready",
+                "intent_type": "topic_resource",
+                "normalized_query": "8岁 四则混合运算 练习题",
+                "learner_age": 8,
+                "stage": "小学低年级",
+                "grade": "二年级",
+                "learning_domain": "数学",
+                "subject": "数学",
+                "core_topic": "四则混合运算",
+                "resource_goal": "练习",
+                "resource_types": ["习题"],
+                "format_preferences": ["pdf"],
+                "constraints": ["适合打印"],
+                "ranking_profile": {"prefer": ["pdf", "可打印"], "avoid": ["强制下载器"]},
+                "execution_tasks": [{"task_id": "task_001", "query": "8岁 四则混合运算 练习题", "filters": {"subject": "数学"}}],
+            },
+        )
+        selection_json = self.work_dir / "local-first-selection.json"
+        self.command(
+            "learning-resource-flow-local-first",
+            [
+                sys.executable,
+                self.script("learning-resource-flow", "scripts", "run_resource_flow.py"),
+                "--intent-json",
+                str(intent_json),
+                "--local-index-file",
+                str(index_dir / "resources.json"),
+                "--local-satisfy-candidates",
+                "1",
+                "--min-source-candidates",
+                "1",
+                "--work-dir",
+                str(self.work_dir / "local-first-flow"),
+                "-o",
+                str(selection_json),
+            ],
+        )
+        selection = load_json(selection_json)
+        assert_true(selection.get("used_local_candidates") is True, "flow 应优先使用本地资料库候选")
+        sources = [item.get("source") for item in selection.get("source_runs") or []]
+        assert_true("local-library-search" in sources, "flow 应调用 local-library-search")
+        assert_true("smartedu-resources" not in sources, "本地候选足够时默认不应继续外部 source")
+        assert_true(selection.get("options", [{}])[0].get("source_name") == "本地学习资料库", "本地候选应进入 selector")
+
+    def test_resource_flow_download_archive(self) -> None:
+        server_dir = self.work_dir / "flow-http"
+        server_dir.mkdir(parents=True, exist_ok=True)
+        resource_file = server_dir / "math-practice.pdf"
+        resource_file.write_bytes(
+            "%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n2 0 obj\n(四则混合运算 练习 可打印)\nendobj\n%%EOF\n".encode("utf-8")
+        )
+        server, thread, base_url = start_static_server(server_dir)
+        try:
+            intent_json = self.work_dir / "flow-download-intent.json"
+            search_results = self.work_dir / "flow-download-web-results.json"
+            output_json = self.work_dir / "flow-download-selection.json"
+            library_dir = self.work_dir / "flow-library"
+            index_dir = self.work_dir / "flow-index"
+            write_json(
+                intent_json,
+                {
+                    "intent_schema": "learning-resource-intent/v1",
+                    "status": "ready",
+                    "intent_type": "topic_resource",
+                    "normalized_query": "8岁 四则混合运算 可打印练习题",
+                    "learner_age": 8,
+                    "learning_domain": "数学",
+                    "subject": "数学",
+                    "core_topic": "四则混合运算",
+                    "resource_goal": "练习",
+                    "resource_types": ["习题"],
+                    "format_preferences": ["pdf"],
+                    "constraints": ["适合打印"],
+                    "ranking_profile": {"prefer": ["pdf", "可打印"], "avoid": ["强制下载器", "成人化内容"]},
+                    "execution_tasks": [{"task_id": "task_001", "query": "8岁 四则混合运算 可打印练习题"}],
+                },
+            )
+            write_json(
+                search_results,
+                {
+                    "query": "8岁 四则混合运算 可打印练习题",
+                    "search_results": [
+                        {
+                            "title": "8岁四则混合运算可打印练习题 PDF",
+                            "url": f"{base_url}/math-practice.pdf",
+                            "snippet": "适合小学低年级儿童的数学练习，可直接打印。",
+                        }
+                    ],
+                },
+            )
+            self.command(
+                "learning-resource-flow-download-archive",
+                [
+                    sys.executable,
+                    self.script("learning-resource-flow", "scripts", "run_resource_flow.py"),
+                    "--intent-json",
+                    str(intent_json),
+                    "--skip-local-search",
+                    "--web-search-results-json",
+                    str(search_results),
+                    "--min-source-candidates",
+                    "3",
+                    "--work-dir",
+                    str(self.work_dir / "flow-download-work"),
+                    "--select",
+                    "A",
+                    "--library-dir",
+                    str(library_dir),
+                    "--index-dir",
+                    str(index_dir),
+                    "-o",
+                    str(output_json),
+                ],
+            )
+            result = load_json(output_json)
+            assert_true(result.get("status") == "post_selection_completed", "flow 选择后应完成下载、归档和索引")
+            post = result.get("post_selection") or {}
+            assert_true((post.get("download") or {}).get("summary", {}).get("downloaded") == 1, "flow 应下载 1 个文件")
+            assert_true((post.get("organize") or {}).get("summary", {}).get("organized") == 1, "flow 应归档 1 个文件")
+            assert_true((index_dir / "resources.json").exists(), "flow 应更新外部索引 resources.json")
+            assert_true(bool(list(library_dir.rglob("*.pdf"))), "最终资料库应包含真实 PDF 文件")
+            assert_true(not list(library_dir.rglob("*.json")), "最终资料库不应包含 JSON 元数据")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_source_discovery_and_profiler(self) -> None:
         sample_candidates = self.skills / "resource-source-discovery" / "references" / "sample-web-candidates.json"
@@ -599,6 +781,7 @@ class SmokeRunner:
         pptx_file = fixture_dir / "分数认识课件.pptx"
         png_file = fixture_dir / "恐龙百科图卡.png"
         html_file = fixture_dir / "risk.html"
+        fake_pdf_file = fixture_dir / "login.pdf"
         candidates_json = self.work_dir / "multiformat-candidates.json"
         analyzed_json = self.work_dir / "multiformat-analyzed.json"
 
@@ -610,6 +793,7 @@ class SmokeRunner:
             "<body>高速下载器 免费破解 成人 贷款</body></html>",
             encoding="utf-8",
         )
+        fake_pdf_file.write_text("<html><body>请登录后查看资源 会员专享</body></html>", encoding="utf-8")
         write_json(
             candidates_json,
             {
@@ -619,6 +803,7 @@ class SmokeRunner:
                     {"title": "分数认识课件", "format": "pptx", "local_file": str(pptx_file), "source_url": "file://pptx"},
                     {"title": "恐龙百科图卡", "format": "png", "local_file": str(png_file), "source_url": "file://png"},
                     {"title": "风险下载页", "format": "html", "local_file": str(html_file), "source_url": "file://html"},
+                    {"title": "伪装 PDF 登录页", "format": "pdf", "local_file": str(fake_pdf_file), "source_url": "file://login"},
                 ],
             },
         )
@@ -639,10 +824,13 @@ class SmokeRunner:
         ppt_analysis = by_title["分数认识课件"]["raw"]["analysis"]
         png_analysis = by_title["恐龙百科图卡"]["raw"]["analysis"]
         risk_analysis = by_title["风险下载页"]["raw"]["analysis"]
+        fake_pdf_analysis = by_title["伪装 PDF 登录页"]["raw"]["analysis"]
         assert_true("四则混合运算" in doc_analysis.get("text_sample", ""), "DOCX 应提取正文样本")
         assert_true(ppt_analysis.get("signals", {}).get("slide_count") == 2, "PPTX 应提取幻灯片数量")
         assert_true(png_analysis.get("signals", {}).get("width") == 2, "PNG 应提取图片宽度")
         assert_true(any("成人" in item for item in risk_analysis.get("warnings") or []), "HTML 风险页应识别成人化风险词")
+        assert_true(fake_pdf_analysis.get("detected_format") == "html", "声明为 PDF 的 HTML 应被识别为 HTML")
+        assert_true(any("登录" in item or "权限" in item for item in fake_pdf_analysis.get("warnings") or []), "登录页伪装资源应被风险提示")
 
     def test_smartedu_downloader_auth_policy(self) -> None:
         selection_json = self.work_dir / "smartedu-selection.json"
@@ -884,6 +1072,8 @@ class SmokeRunner:
         self.prepare()
         self.test_web_to_selection()
         self.test_source_first_flow()
+        self.test_resource_flow_local_first()
+        self.test_resource_flow_download_archive()
         self.test_source_discovery_and_profiler()
         self.test_smartedu_resources()
         self.test_multiformat_analyzer()
@@ -897,7 +1087,7 @@ class SmokeRunner:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run offline smoke tests for learning resource skills")
-    parser.add_argument("--work-dir", default="/tmp/learning-resource-skill-smoke", help="Temporary smoke test work directory")
+    parser.add_argument("--work-dir", default=".learning-resource-work/smoke", help="Temporary smoke test work directory")
     parser.add_argument("--keep-work", action="store_true", help="Keep existing work directory contents")
     args = parser.parse_args()
 

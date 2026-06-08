@@ -97,6 +97,7 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 ```bash
 python3 skills/learning-resource-flow/scripts/run_resource_flow.py \
   --intent-json intent.json \
+  --local-index-file .learning-resource-work/index/resources.json \
   --smartedu-search-response-json skills/smartedu-resources/references/sample-search-response.json \
   --web-search-results-json web-results.json \
   --web-profile-html-file skills/web-resource-profiler/references/sample-resource-page.html \
@@ -106,6 +107,8 @@ python3 skills/learning-resource-flow/scripts/run_resource_flow.py \
 该脚本接收 `learning-resource-intent/v1` 结构化 JSON，执行：
 
 ```text
+local-library-search
+  -> 本地候选数量阈值判断
 smartedu-resources site-profile
   -> smartedu-resources 候选查询
   -> 候选数量阈值判断
@@ -121,6 +124,28 @@ smartedu-resources site-profile
 如果未提供 `--web-search-results-json` 且已优化 source 候选不足，脚本会输出 `needs_web_search=true`，由 agent 使用自身通用搜索能力拿到搜索结果后再继续。
 
 真实运行时通常不传 `--web-profile-html-file`，由 profiler 联网分析来源页面；离线测试时才传本地 HTML fixture。
+
+用户确认下载后，可在同一脚本中继续执行下载、归档和索引更新：
+
+```bash
+python3 skills/learning-resource-flow/scripts/run_resource_flow.py \
+  --intent-json intent.json \
+  --web-search-results-json web-results.json \
+  --select A,B \
+  --library-dir 学习资料库 \
+  --index-dir .learning-resource-work/index
+```
+
+确认后链路会执行：
+
+```text
+learning-resource-downloader
+  -> learning-resource-analyzer      # 复查下载后的真实文件
+  -> learning-library-organizer
+  -> learning-library-index
+```
+
+如果只想检查候选是否可访问，不保存文件，可加 `--probe-only`。正式下载后会先复查本地文件，避免把登录页、错误页或格式伪装文件直接当作正常资源归档。最终资料库仍只写入真实资源文件，下载结果、归档摘要和索引更新摘要保存在工作目录或外部索引中。
 
 ## 脚本化教材兼容链路
 

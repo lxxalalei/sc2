@@ -19,10 +19,12 @@ from typing import Any
 
 
 RISK_TERMS = ["下载器", "高速下载", "破解", "破解版", "成人", "博彩", "贷款", "注册机", "付费", "会员", "登录"]
+AUTH_PAGE_TERMS = ["请登录", "登录后", "会员专享", "开通会员", "无权限", "403", "access denied", "forbidden"]
 DOCUMENT_FORMATS = {"pdf", "doc", "docx", "ppt", "pptx", "txt"}
 IMAGE_FORMATS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
 AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "flac"}
 VIDEO_FORMATS = {"mp4", "mov", "avi", "mkv", "webm"}
+SIDECAR_TEXT_EXTENSIONS = [".srt", ".vtt", ".lrc", ".txt"]
 
 
 class TextHTMLParser(HTMLParser):
@@ -69,6 +71,29 @@ def detect_format(candidate: dict[str, Any], path: Path | None = None) -> str:
     return suffix or "unknown"
 
 
+def sniff_local_format(path: Path, declared: str) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    try:
+        data = path.read_bytes()[:4096]
+    except Exception:
+        return declared, warnings
+    stripped = data.lstrip().lower()
+    sniffed = ""
+    if data.startswith(b"%PDF"):
+        sniffed = "pdf"
+    elif data.startswith(b"PK\x03\x04"):
+        sniffed = declared if declared in {"docx", "pptx", "xlsx", "zip"} else "zip"
+    elif data.startswith(b"\x89PNG\r\n\x1a\n"):
+        sniffed = "png"
+    elif data.startswith(b"\xff\xd8"):
+        sniffed = "jpg"
+    elif stripped.startswith((b"<!doctype html", b"<html", b"<head", b"<body")):
+        sniffed = "html"
+    if sniffed and declared not in {"unknown", sniffed}:
+        warnings.append(f"文件格式与实际内容不一致：声明为 {declared}，实际像 {sniffed}")
+    return sniffed or declared, warnings
+
+
 def analysis_type(fmt: str) -> str:
     if fmt in DOCUMENT_FORMATS:
         return "document"
@@ -85,6 +110,11 @@ def analysis_type(fmt: str) -> str:
 
 def risk_warnings(text: str) -> list[str]:
     return [f"包含风险词：{term}" for term in RISK_TERMS if term in text]
+
+
+def auth_page_warnings(text: str) -> list[str]:
+    lowered = text.lower()
+    return ["疑似登录、权限或付费限制页面"] if any(term.lower() in lowered for term in AUTH_PAGE_TERMS) else []
 
 
 def local_path(candidate: dict[str, Any]) -> Path | None:
@@ -151,24 +181,82 @@ def extract_zip_xml_text(path: Path, suffix: str) -> dict[str, Any]:
     }
 
 
-def count_pdf_pages(path: Path) -> int | None:
-    data = path.read_bytes()
+def count_pdf_pages_from_bytes(data: bytes) -> int | None:
     count = len(re.findall(rb"/Type\s*/Page\b", data))
     return count or None
 
 
+def pdftotext_sample(path: Path) -> str:
+    if not shutil.which("pdftotext"):
+        return ""
+    try:
+        result = subprocess.run(
+            ["pdftotext", "-layout", "-q", str(path), "-"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return clean_text(result.stdout, limit=2000)
+    except Exception:
+        return ""
+
+
+def decode_pdf_literal(raw: bytes) -> str:
+    raw = raw.replace(rb"\(", b"(").replace(rb"\)", b")").replace(rb"\\", b"\\")
+    if raw.startswith(b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16-be", errors="ignore")
+        except Exception:
+            return ""
+    return raw.decode("latin-1", errors="ignore")
+
+
+def fallback_pdf_text_sample(data: bytes) -> str:
+    matches = re.findall(rb"\((?:\\.|[^\\)]){2,240}\)", data[: 2 * 1024 * 1024])
+    parts: list[str] = []
+    for match in matches[:80]:
+        text = decode_pdf_literal(match[1:-1])
+        if re.search(r"[\w\u4e00-\u9fff]", text):
+            parts.append(text)
+    return clean_text(" ".join(parts), limit=2000)
+
+
 def analyze_pdf(path: Path) -> dict[str, Any]:
-    page_count = count_pdf_pages(path)
+    data = path.read_bytes()
+    page_count = count_pdf_pages_from_bytes(data)
+    text_sample = pdftotext_sample(path) or fallback_pdf_text_sample(data)
+    text_length = len(text_sample)
+    warnings = []
+    if not page_count:
+        warnings.append("无法解析 PDF 页数")
+    if not text_sample:
+        warnings.append("未提取到 PDF 文本，可能是扫描版或受保护文件")
     return {
-        "text_sample": "",
+        "text_sample": text_sample,
         "signals": {
             "file_size": path.stat().st_size,
             "page_count": page_count,
-            "text_length": 0,
+            "text_length": text_length,
         },
-        "warnings": [] if page_count else ["无法解析 PDF 页数或文本"],
-        "confidence": 0.65 if page_count else 0.45,
+        "warnings": warnings,
+        "confidence": 0.82 if text_sample else (0.65 if page_count else 0.45),
     }
+
+
+def sidecar_text(path: Path) -> str:
+    parts: list[str] = []
+    for suffix in SIDECAR_TEXT_EXTENSIONS:
+        sidecar = path.with_suffix(suffix)
+        if sidecar.exists() and sidecar.is_file():
+            try:
+                raw = sidecar.read_text(encoding="utf-8", errors="replace")
+                raw = re.sub(r"\d{2}:\d{2}:\d{2}[,\.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,\.]\d{3}", " ", raw)
+                raw = re.sub(r"^\d+$", " ", raw, flags=re.MULTILINE)
+                parts.append(raw)
+            except Exception:
+                continue
+    return clean_text(" ".join(parts), limit=2000)
 
 
 def image_size(path: Path) -> tuple[int | None, int | None]:
@@ -264,17 +352,62 @@ def analyze_local_file(path: Path, fmt: str) -> dict[str, Any]:
         if probe.get("format", {}).get("duration"):
             duration = float(probe["format"]["duration"])
         signals["duration_seconds"] = duration
+        transcript = sidecar_text(path)
+        signals["sidecar_text_length"] = len(transcript)
         if fmt in VIDEO_FORMATS or fmt == "video":
             video_stream = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
             signals["width"] = video_stream.get("width")
             signals["height"] = video_stream.get("height")
-        return {"text_sample": "", "signals": signals, "warnings": warnings, "confidence": 0.75 if probe else 0.45}
+        media_warnings = warnings if transcript else warnings + ["未找到字幕或转写文本，内容证据不足"]
+        confidence = 0.82 if transcript else (0.75 if probe else 0.45)
+        return {"text_sample": transcript, "signals": signals, "warnings": media_warnings, "confidence": confidence}
     return {"text_sample": "", "signals": signals, "warnings": warnings + ["暂不支持该格式的深度分析"], "confidence": 0.35}
 
 
 def keywords_from_text(text: str) -> list[str]:
-    terms = ["数学", "四则", "运算", "练习", "可打印", "恐龙", "百科", "唐诗", "宋词", "儿歌", "视频", "音频", "课件", "识字"]
+    terms = [
+        "数学",
+        "四则",
+        "运算",
+        "练习",
+        "可打印",
+        "恐龙",
+        "百科",
+        "唐诗",
+        "宋词",
+        "儿歌",
+        "视频",
+        "音频",
+        "课件",
+        "识字",
+        "拼音",
+        "自然拼读",
+        "绘本",
+        "科学",
+        "实验",
+        "宇宙",
+    ]
     return [term for term in terms if term in text]
+
+
+def content_quality_signals(analysis: dict[str, Any]) -> dict[str, Any]:
+    signals = analysis.get("signals") if isinstance(analysis.get("signals"), dict) else {}
+    text_length = int(signals.get("text_length") or len(analysis.get("text_sample") or ""))
+    file_size = int(signals.get("file_size") or 0)
+    page_count = signals.get("page_count")
+    duration = signals.get("duration_seconds")
+    evidence_level = "none"
+    if text_length >= 500:
+        evidence_level = "strong"
+    elif text_length >= 80 or page_count or duration:
+        evidence_level = "basic"
+    elif file_size >= 1024:
+        evidence_level = "metadata_only"
+    return {
+        "text_length": text_length,
+        "has_content_evidence": evidence_level in {"strong", "basic"},
+        "content_evidence_level": evidence_level,
+    }
 
 
 def analyze_candidate(candidate: dict[str, Any], fetch_remote: bool, timeout: int) -> dict[str, Any]:
@@ -300,6 +433,11 @@ def analyze_candidate(candidate: dict[str, Any], fetch_remote: bool, timeout: in
     if path:
         if path.exists():
             try:
+                fmt, sniff_warnings = sniff_local_format(path, fmt)
+                kind = analysis_type(fmt)
+                analysis["analysis_type"] = kind
+                analysis["detected_format"] = fmt
+                warnings.extend(sniff_warnings)
                 result = analyze_local_file(path, fmt)
                 analysis["signals"].update(result.get("signals") or {})
                 analysis["text_sample"] = result.get("text_sample") or ""
@@ -323,10 +461,13 @@ def analyze_candidate(candidate: dict[str, Any], fetch_remote: bool, timeout: in
 
     combined_text = " ".join([title_desc, analysis.get("text_sample") or ""])
     warnings.extend(risk_warnings(combined_text))
+    warnings.extend(auth_page_warnings(combined_text))
     analysis["keywords"] = keywords_from_text(combined_text)
+    analysis["signals"].update(content_quality_signals(analysis))
     analysis["warnings"] = list(dict.fromkeys(warnings))
     raw["analysis"] = analysis
     enriched["raw"] = raw
+    enriched["format"] = fmt
     return enriched
 
 
@@ -348,6 +489,8 @@ def analyze_payload(data: dict[str, Any], fetch_remote: bool, timeout: int) -> d
         "analyzed_count": len(analyzed),
         "query": data.get("query"),
         "filters": data.get("filters"),
+        "intent": data.get("intent"),
+        "ranking_profile": data.get("ranking_profile") or (data.get("intent") or {}).get("ranking_profile"),
         "candidates": analyzed,
     }
 

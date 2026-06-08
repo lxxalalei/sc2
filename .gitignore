@@ -7,6 +7,7 @@ dist/
 教材资料库/
 学习资料库/
 .smartedu-textbooks-work/
+.learning-resource-work/
 
 __pycache__/
 *.py[cod]

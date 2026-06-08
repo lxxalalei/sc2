@@ -409,6 +409,8 @@ Source skill 统一职责：
 - [x] 为 `smartedu-resources` 增加站点能力画像 `site-profile`。
 - [x] 为 `learning-resource-flow` 增加 source-first 通用编排脚本，先查已优化站点 source，候选不足再接收 agent 通用搜索结果。
 - [x] 将 `resource-source-discovery`、`web-resource-profiler`、`generic-web-source` 接入 source-first web fallback。
+- [x] 将 `local-library-search` 接入 `learning-resource-flow`，支持先查本地资料库外部索引，本地候选不足时再进入外部来源。
+- [x] 为 `learning-resource-flow` 增加用户确认后的脚本化闭环：selector 结果可通过 `--select` 继续进入 downloader、organizer 和 external index。
 - [ ] 创建更多 source skills。
 
 ### P5：回归测试与质量保障
@@ -416,7 +418,7 @@ Source skill 统一职责：
 - [x] 创建离线 smoke test，覆盖核心 skill 链路。
 - [ ] 为 intent 追问样例增加自动化断言。
 - [x] 为 DOCX、PPTX、PNG、HTML 风险页增加 analyzer 样例。
-- [ ] 为 PDF 文本、图片 OCR、音视频字幕等更深内容证据增加 analyzer 样例。
+- [x] 为 PDF 轻量文本、格式伪装登录页、音视频侧车字幕入口增加 analyzer 支持；图片 OCR 和自动转写仍待实现。
 - [ ] 打包脚本化并自动检查敏感信息、缓存和资料库污染。
 
 ## 进度日志
@@ -517,3 +519,8 @@ Source skill 统一职责：
 - 新增 source-first 离线回归用例：SmartEdu 样例候选不足时，流程自动接收 `web-learning-search` 标准化后的 agent 搜索结果，并继续进入 analyzer、ranker、selector。
 - 将 source-first 的 web fallback 后半段接入完整链路：`web-learning-search -> resource-source-discovery -> web-resource-profiler -> generic-web-source`；流程会保留 `web-candidates.json`、`source-discovery.json`、`site-profile.json`、`generic-candidates.json` 等工作文件用于调试。
 - 更新 `learning-resource-flow` 主说明、`source-policy.md` 和 `flow-cases.md`：标准流程从“教材类/主题类”分支改为“意图解构 -> 已优化 source 优先 -> 网络搜索补充 -> 统一分析评分选择”。
+- 将 `local-library-search` 接入 `learning-resource-flow`，默认先查 `.learning-resource-work/index/resources.json`；本地候选达到阈值时可直接进入 analyzer/ranker/selector，本地不足再查已优化 source 和 web fallback。
+- 为 `learning-resource-flow` 增加 `--select` 后处理链路，用户确认候选编号后可继续执行 `learning-resource-downloader -> learning-resource-analyzer -> learning-library-organizer -> learning-library-index`，下载后先复查真实文件再归档，并把下载、归档、索引摘要写回 `post_selection`。
+- 增强 `learning-resource-analyzer` 的通用资源证据：轻量提取 PDF 页数和文本样本，识别声明格式与实际内容不一致的伪装资源，标记登录/权限/会员页风险，音视频支持同名 `.srt/.vtt/.lrc/.txt` 侧车文本。
+- 增强 `learning-resource-ranker` 对内容证据和用户偏好的消费：评分中加入 `content_evidence` 和 `preference_fit`，对缺少内容证据、登录限制、格式伪装、可打印/听赏/视频场景做更明确的加权或降权。
+- 扩展离线 smoke test：新增本地资料库优先 flow 用例、基于本机 HTTP 服务的 `flow --select` 下载归档索引用例，以及声明为 PDF 的 HTML 登录页识别断言。

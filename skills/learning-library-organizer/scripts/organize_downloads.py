@@ -184,6 +184,9 @@ def destination_for(item: dict[str, Any], source_path: Path, library_dir: Path, 
     suffix_format = FORMAT_ALIASES.get(suffix.lstrip("."), suffix.lstrip("."))
     if not suffix or suffix in BLOCKED_LIBRARY_SUFFIXES or suffix_format not in FORMAT_ALIASES:
         suffix = f".{fmt}"
+    elif fmt in FORMAT_ALIASES and suffix_format != fmt:
+        suffix = f".{fmt}"
+        needs_review = True
     filename = f"{safe_part(title, '未知标题', 70)}_{digest[:8]}{suffix}"
 
     if confidence < review_threshold or needs_review:

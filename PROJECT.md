@@ -58,6 +58,8 @@
 
 下一步重点是继续完善 `smartedu-resources` 的站点级资源掌控能力，包括真实环境检索联调、搜索候选到详情 JSON 的追踪、教材 `tchMaterial` 内部适配迁移和更多栏目适配，同时增强 analyzer 的真实内容识别能力，例如 PDF 文本、图片 OCR、音视频字幕和媒体内容证据。
 
+当前通用流程脚本已支持本地资料库外部索引优先检索、已优化 source 优先、web fallback、统一分析评分选择，以及用户确认编号后的下载、归档和外部索引更新。最终资料库仍只写入真实资源文件。
+
 离线回归入口：
 
 [scripts/run_smoke_tests.py](scripts/run_smoke_tests.py)

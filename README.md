@@ -35,6 +35,8 @@
 
 OpenClaw 接入时建议优先加载并触发的总控入口。负责把用户学习资源需求串联到后续 skills，避免只调用搜索或下载后就结束。
 
+通用 source-first 链路已支持先检索本地资料库外部索引，再查询已优化站点 source；候选不足时接收 agent 通用搜索结果并进入网页来源发现、站点画像、通用直链抽取、分析、评分和选择。用户确认候选编号后，可继续串联下载、归档和外部索引更新。
+
 教材测试链路：
 
 ```bash
@@ -280,7 +282,7 @@ python3 skills/local-library-search/scripts/search_local_library.py \
 
 位置：[skills/learning-resource-analyzer](skills/learning-resource-analyzer)
 
-负责对候选资源做格式识别、详情解析和内容证据提取，位于搜索和评分之间。第一版支持本地 HTML/TXT/PDF/DOCX/PPTX 的轻量分析，支持图片宽高提取，并为音频、视频保留元数据分析入口。
+负责对候选资源做格式识别、详情解析和内容证据提取，位于搜索和评分之间。第一版支持本地 HTML/TXT/PDF/DOCX/PPTX 的轻量分析，支持 PDF 页数与轻量文本样本、声明格式与实际内容不一致识别、图片宽高提取，并为音频、视频读取 `ffprobe` 元数据和同名字幕/转写侧车文件。
 
 分析输出契约：
 
@@ -389,4 +391,4 @@ python3 scripts/run_smoke_tests.py
 
 - 扩展更多 source skills，例如课程、课件、视频、音频、儿童百科等资源来源。
 - 将 smoke test 扩展为更系统的回归测试集。
-- 继续增强 analyzer 的真实内容识别，例如 PDF 文本提取、图片 OCR、音视频字幕和媒体内容证据。
+- 继续增强 analyzer 的真实内容识别，例如更稳健的 PDF 正文抽取、图片 OCR、音视频自动转写和媒体内容证据。
