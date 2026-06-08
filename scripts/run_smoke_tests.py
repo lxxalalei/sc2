@@ -183,6 +183,100 @@ class SmokeRunner:
         assert_true(selection_data.get("shown_count", 0) >= 1, "selector 应至少展示一个候选")
         return selection
 
+    def test_source_first_flow(self) -> None:
+        intent_json = self.work_dir / "source-first-intent.json"
+        search_results = self.work_dir / "source-first-web-results.json"
+        selection_json = self.work_dir / "source-first-selection.json"
+        sample_smartedu_search = self.skills / "smartedu-resources" / "references" / "sample-search-response.json"
+        sample_html = self.skills / "web-resource-profiler" / "references" / "sample-resource-page.html"
+
+        write_json(
+            intent_json,
+            {
+                "intent_schema": "learning-resource-intent/v1",
+                "status": "ready",
+                "intent_type": "topic_resource",
+                "normalized_query": "8岁 四则混合运算 可打印练习题",
+                "learner_age": 8,
+                "learning_domain": "数学",
+                "subject": "数学",
+                "core_topic": "四则混合运算",
+                "resource_goal": "练习",
+                "resource_types": ["习题"],
+                "format_preferences": ["pdf"],
+                "execution_tasks": [
+                    {
+                        "task_id": "task_001",
+                        "task_type": "source_search",
+                        "target_skill": "source-first",
+                        "action": "search",
+                        "query": "8岁 四则混合运算 可打印练习题",
+                        "filters": {
+                            "learner_age": 8,
+                            "learning_domain": "数学",
+                            "subject": "数学",
+                            "core_topic": "四则混合运算",
+                            "resource_types": ["习题"],
+                            "format_preferences": ["pdf"],
+                        },
+                        "download_policy": "after_user_selection",
+                    }
+                ],
+            },
+        )
+        write_json(
+            search_results,
+            {
+                "query": "8岁 四则混合运算 可打印练习题",
+                "search_results": [
+                    {
+                        "title": "8岁四则混合运算可打印练习题 PDF",
+                        "url": "https://example.edu.cn/math.pdf",
+                        "snippet": "适合小学低年级儿童的数学练习，可直接打印。",
+                    },
+                    {
+                        "title": "四则混合运算练习题讲义",
+                        "url": "https://example.edu.cn/math-practice.docx",
+                        "snippet": "包含加减乘除混合运算练习。",
+                    },
+                ],
+            },
+        )
+        self.command(
+            "learning-resource-flow-source-first",
+            [
+                sys.executable,
+                self.script("learning-resource-flow", "scripts", "run_resource_flow.py"),
+                "--intent-json",
+                str(intent_json),
+                "--smartedu-search-response-json",
+                str(sample_smartedu_search),
+                "--web-search-results-json",
+                str(search_results),
+                "--web-profile-html-file",
+                str(sample_html),
+                "--min-source-candidates",
+                "3",
+                "--work-dir",
+                str(self.work_dir / "source-first-flow"),
+                "-o",
+                str(selection_json),
+            ],
+        )
+        selection = load_json(selection_json)
+        assert_true(selection.get("flow_schema") == "learning-resource-flow/v1", "source-first flow 应输出流程标记")
+        assert_true(selection.get("source_first") is True, "source-first flow 应标记先查已优化来源")
+        assert_true(selection.get("used_web_fallback") is True, "已优化来源候选不足时应启用 web fallback")
+        sources = [item.get("source") for item in selection.get("source_runs") or []]
+        assert_true("smartedu-resources" in sources, "source-first flow 应先调用 SmartEdu source")
+        assert_true("web-learning-search" in sources, "source-first flow 候选不足时应调用 web-learning-search")
+        assert_true("resource-source-discovery" in sources, "source-first flow 应接入来源发现")
+        assert_true("web-resource-profiler" in sources, "source-first flow 应接入资源站画像")
+        assert_true("generic-web-source" in sources, "source-first flow 应接入通用资源站抽取")
+        assert_true(bool(selection.get("work_files", {}).get("source_discovery")), "source-first flow 应记录来源发现工作文件")
+        assert_true(bool(selection.get("work_files", {}).get("generic_candidates")), "source-first flow 应记录通用抽取候选文件")
+        assert_true(selection.get("shown_count", 0) >= 1, "source-first flow 应生成用户可选候选")
+
     def test_source_discovery_and_profiler(self) -> None:
         sample_candidates = self.skills / "resource-source-discovery" / "references" / "sample-web-candidates.json"
         source_discovery = self.work_dir / "source-discovery.json"
@@ -241,7 +335,12 @@ class SmokeRunner:
         assert_true(bool(generic_items[0].get("raw", {}).get("origin_page_url")), "通用抽取候选应保留原始页面 URL")
 
     def test_smartedu_resources(self) -> None:
+        site_profile_json = self.work_dir / "smartedu-site-profile.json"
         catalogs_json = self.work_dir / "smartedu-catalogs.json"
+        route_map_json = self.work_dir / "smartedu-route-map.json"
+        page_profile_json = self.work_dir / "smartedu-page-profile.json"
+        catalog_scan_json = self.work_dir / "smartedu-catalog-scan.json"
+        site_scan_json = self.work_dir / "smartedu-site-scan.json"
         textbook_candidates_json = self.work_dir / "smartedu-textbook-candidates.json"
         textbook_work_dir = self.work_dir / "smartedu-textbook-work"
         search_candidates_json = self.work_dir / "smartedu-search-candidates.json"
@@ -249,9 +348,126 @@ class SmokeRunner:
         search_detail_dir = self.work_dir / "smartedu-search-details"
         candidates_json = self.work_dir / "smartedu-resource-candidates.json"
         sample_library = self.skills / "smartedu-resources" / "references" / "sample-librarylist.json"
+        sample_page = self.skills / "smartedu-resources" / "references" / "sample-page.html"
         sample_textbooks = self.skills / "smartedu-resources" / "references" / "sample-textbooks.json"
         sample_search = self.skills / "smartedu-resources" / "references" / "sample-search-response.json"
         sample_detail = self.skills / "smartedu-resources" / "references" / "sample-detail.json"
+
+        self.command(
+            "smartedu-resources-site-profile",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "site-profile",
+                "--library-list-json",
+                str(sample_library),
+                "--header",
+                "X-Test-Auth: test-marker-value",
+                "-o",
+                str(site_profile_json),
+            ],
+        )
+        site_profile = load_json(site_profile_json)
+        assert_true(site_profile.get("source_profile_schema") == "learning-resource-source-profile/v1", "SmartEdu 应输出站点能力画像")
+        assert_true(site_profile.get("routing_policy", {}).get("type_binding") is False, "SmartEdu 来源不应与资源类型硬绑定")
+        assert_true(site_profile.get("access_policy", {}).get("auth_context") is True, "SmartEdu 能力画像应标记授权上下文")
+        assert_true(site_profile.get("catalog_summary", {}).get("textbook_catalogs") == 1, "能力画像应识别教材是站内分支")
+        assert_true("test-marker-value" not in site_profile_json.read_text(encoding="utf-8"), "能力画像不应泄露授权 header 原文")
+
+        self.command(
+            "smartedu-resources-route-map",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "route-map",
+                "--library-list-json",
+                str(sample_library),
+                "-o",
+                str(route_map_json),
+            ],
+        )
+        route_map = load_json(route_map_json)
+        routes = route_map.get("routes") or []
+        assert_true(route_map.get("route_map_schema") == "smartedu-route-map/v1", "SmartEdu 应输出栏目路由图")
+        assert_true("duplicates_removed" in route_map.get("summary", {}), "路由图应报告去重数量")
+        assert_true(any(item.get("scan_strategy") == "internal_adapter" for item in routes), "路由图应包含教材内部适配分支")
+        assert_true(any(item.get("scan_strategy") == "search_then_detail" for item in routes), "路由图应包含搜索到详情分支")
+        assert_true(any(item.get("detail_url_templates") for item in routes), "路由图应包含详情 URL 模板")
+
+        self.command(
+            "smartedu-resources-page-profile",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "page-profile",
+                "--url",
+                "https://basic.smartedu.cn/",
+                "--html-file",
+                str(sample_page),
+                "-o",
+                str(page_profile_json),
+            ],
+        )
+        page_profile = load_json(page_profile_json)
+        assert_true(page_profile.get("page_profile_schema") == "smartedu-page-profile/v1", "SmartEdu 应输出页面画像")
+        assert_true(page_profile.get("summary", {}).get("api_hints", 0) >= 3, "页面画像应识别接口线索")
+        assert_true(page_profile.get("summary", {}).get("detail_hints", 0) >= 1, "页面画像应识别详情线索")
+        assert_true(page_profile.get("summary", {}).get("resource_link_hints", 0) >= 1, "页面画像应识别资源链接线索")
+        assert_true("script_sources" in page_profile.get("summary", {}), "页面画像应报告脚本来源数量")
+        assert_true("search-resources" in page_profile.get("recommended_next_actions", []), "页面画像应建议搜索资源动作")
+
+        self.command(
+            "smartedu-resources-scan-catalog",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "scan-catalog",
+                "--route-map-json",
+                str(route_map_json),
+                "--type",
+                "qualityCourse",
+                "--query",
+                "三年级数学",
+                "--search-response-json",
+                str(sample_search),
+                "-o",
+                str(catalog_scan_json),
+            ],
+        )
+        catalog_scan = load_json(catalog_scan_json)
+        scan_candidates = catalog_scan.get("candidates") or []
+        assert_true(catalog_scan.get("scan_schema") == "smartedu-catalog-scan/v1", "SmartEdu 应输出栏目扫描结果")
+        assert_true(catalog_scan.get("summary", {}).get("routes_scanned") == 1, "栏目扫描应扫描 1 条 route")
+        assert_true(len(scan_candidates) == 2, "栏目扫描应归一化搜索候选")
+        assert_true(all(item.get("raw", {}).get("smartedu_route_id") for item in scan_candidates), "栏目扫描候选应保留 route 追踪信息")
+
+        self.command(
+            "smartedu-resources-scan-site",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "scan-site",
+                "--route-map-json",
+                str(route_map_json),
+                "--catalog",
+                "syncClassroom",
+                "--query",
+                "三年级数学",
+                "--route-limit",
+                "2",
+                "--search-response-json",
+                str(sample_search),
+                "-o",
+                str(site_scan_json),
+            ],
+        )
+        site_scan = load_json(site_scan_json)
+        site_candidates = site_scan.get("candidates") or []
+        assert_true(site_scan.get("site_scan_schema") == "smartedu-site-scan/v1", "SmartEdu 应输出站点扫描结果")
+        assert_true(site_scan.get("summary", {}).get("routes_scanned") == 2, "站点扫描应批量扫描 2 条 route")
+        assert_true(site_scan.get("summary", {}).get("raw_candidates") >= 2, "站点扫描应汇总原始候选")
+        assert_true(site_scan.get("summary", {}).get("duplicates_removed") >= 1, "站点扫描应去重重复候选")
+        assert_true(len(site_candidates) == 2, "站点扫描去重后应保留标准候选")
 
         self.command(
             "smartedu-resources-catalogs",
@@ -667,6 +883,7 @@ class SmokeRunner:
     def run(self) -> None:
         self.prepare()
         self.test_web_to_selection()
+        self.test_source_first_flow()
         self.test_source_discovery_and_profiler()
         self.test_smartedu_resources()
         self.test_multiformat_analyzer()

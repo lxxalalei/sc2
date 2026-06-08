@@ -1,6 +1,6 @@
 # 学习资源 Agent 项目计划与进度
 
-更新时间：2026-06-06
+更新时间：2026-06-08
 
 ## 项目目标
 
@@ -86,7 +86,7 @@
 
 已创建：
 
-- `smartedu-resources`：国家中小学智慧教育平台站点级资源入口，已支持栏目画像、站内搜索候选归一化、搜索候选详情追踪、站内教材候选和详情 `ti_items` 候选解析；教材 `tchMaterial` 是其中一种站内资源分支。
+- `smartedu-resources`：国家中小学智慧教育平台站点级资源入口，已支持站点能力画像、栏目画像、栏目路由图、栏目扫描、站点批量扫描、页面 HTML/JS 线索画像、站内搜索候选归一化、搜索候选详情追踪、站内教材候选和详情 `ti_items` 候选解析；教材 `tchMaterial` 是其中一种站内资源分支。
 - `smartedu-textbooks`：早期教材 PDF 兼容适配资产，保留已跑通的候选、下载和资料库整理脚本；不再作为 OpenClaw 外部路由的独立资源站来源。
 - `web-learning-search`：通用搜索结果标准化来源，已支持将 agent 搜索结果转为标准候选资源。
 - `resource-source-discovery`：从搜索结果或网页候选中识别资源站候选，做来源级粗筛。
@@ -108,7 +108,7 @@ Source skill 统一职责：
 - 返回统一候选资源列表。
 - 不直接决定最终质量排名。
 
-状态：`smartedu-resources`、`web-learning-search`、`resource-source-discovery`、`web-resource-profiler`、`generic-web-source`、`local-library-search` 已完成第一版，其余待创建。`smartedu-resources` 当前可把 SmartEdu 栏目、搜索结果、搜索候选详情、教材候选和详情文件项统一转为候选；在线搜索接口在命令行环境可能受 WAF/登录态影响，OpenClaw 或账号态运行时应传入可用 endpoint/token/header，上线前继续做真实环境联调。
+状态：`smartedu-resources`、`web-learning-search`、`resource-source-discovery`、`web-resource-profiler`、`generic-web-source`、`local-library-search` 已完成第一版，其余待创建。`smartedu-resources` 当前可输出站点能力画像、栏目路由图和页面线索画像，可按栏目路由执行候选扫描或批量扫描多个栏目，并把 SmartEdu 栏目、搜索结果、搜索候选详情、教材候选和详情文件项统一转为候选；在线搜索接口在命令行环境可能受 WAF/登录态影响，OpenClaw 或账号态运行时应传入可用 endpoint/token/header，上线前继续做真实环境联调。
 
 ### 3. `learning-resource-ranker`
 
@@ -406,6 +406,9 @@ Source skill 统一职责：
 - [x] 创建 `web-resource-profiler`，对高价值资源站做结构分析。
 - [x] 创建 `generic-web-source`，对简单资源站直接抽取候选资源。
 - [x] 创建 `smartedu-resources`，解析 SmartEdu 全平台栏目和详情资源项候选。
+- [x] 为 `smartedu-resources` 增加站点能力画像 `site-profile`。
+- [x] 为 `learning-resource-flow` 增加 source-first 通用编排脚本，先查已优化站点 source，候选不足再接收 agent 通用搜索结果。
+- [x] 将 `resource-source-discovery`、`web-resource-profiler`、`generic-web-source` 接入 source-first web fallback。
 - [ ] 创建更多 source skills。
 
 ### P5：回归测试与质量保障
@@ -496,3 +499,21 @@ Source skill 统一职责：
 - 增强 `learning-resource-downloader` 对 SmartEdu 文件项候选的支持：默认跳过 `requires_auth=true` 资源；显式 `--allow-auth` 且存在授权上下文时，尝试 `source_url` 和 `candidate.raw.url_candidates`；下载输出只记录 `auth_context=true/false`，不泄露 token、cookie 或 header 原文。
 - 为 `learning-resource-downloader` 增加 `--probe-only`，支持下载前按顺序探测 `source_url` 和 `candidate.raw.url_candidates` 的可访问性、HTTP 状态、内容类型和长度；探测模式不保存文件，适合 SmartEdu 私有/公共候选 URL 的下载前筛选。
 - 受当前沙箱限制，离线回归不能启动本地 HTTP 服务做成功下载样例；已保留默认跳过、授权探测、URL fallback 尝试和敏感信息不泄露测试。真实成功下载需在有网络/账号态环境中用 `SMARTEDU_ACCESS_TOKEN` 注入后执行 `search-resources --fetch-details`、selector、downloader `--probe-only` 和正式下载。
+
+### 2026-06-08
+
+- 为 `smartedu-resources` 增加 `site-profile` 子命令，输出 `learning-resource-source-profile/v1` 站点能力画像，包含资源类型覆盖、格式覆盖、可用命令、授权策略、栏目摘要和路由策略。
+- 为 `smartedu-resources` 增加 `route-map` 子命令，输出 `smartedu-route-map/v1` 栏目路由图，把 `librarylist.json` 中的栏目转为页面 URL、搜索 tab、详情模板和扫描策略。
+- 为 `smartedu-resources` 增加 `page-profile` 子命令，输出 `smartedu-page-profile/v1` 页面画像，从 SmartEdu 页面 HTML/JS 中抽取 API、详情 ID、资源链接和下一步动作线索。
+- 为 `smartedu-resources` 增加 `scan-catalog` 子命令，输出 `smartedu-catalog-scan/v1`，可按 route-map 中的栏目路由扫描候选；第一版支持离线搜索响应归一化、在线搜索接口联调入口和可选详情追踪。
+- 为 `smartedu-resources` 增加 `scan-site` 子命令，输出 `smartedu-site-scan/v1`，可基于 route-map 批量扫描多个栏目、汇总候选、去重并记录失败 route。
+- 真实环境联调 SmartEdu 公开栏目配置：`route-map` 可联网读取官方 `librarylist.json`，真实数据中共 147 个栏目项，去重后得到 133 条唯一 route，包含 1 条教材内部适配分支和 132 条搜索到详情分支。
+- 修正 SmartEdu route-map 重复栏目问题，新增 route 去重统计 `duplicates_removed`。
+- 修正 `page-profile` 对前端根节点 ID 的误判，不再把 `id="root-x-edu-web"` 识别为详情资源 ID。
+- 为 `page-profile` 增加 `--fetch-scripts` 和 `--script-limit`，可选择抓取页面引用的 JS 文件并一起抽取接口线索；默认关闭，避免普通调用额外联网。
+- 真实环境联调 SmartEdu 搜索网关：未登录和仅 access token 注入时，`resource-gateway.ykt.eduyun.cn` 搜索接口均返回 403；后续真实扫描需要完整 cookie、Authorization 或浏览器上下文。
+- 将 SmartEdu 能力画像接入离线 smoke test，验证授权上下文只输出 `auth_context=true/false`，不泄露 header、token 或 cookie 原文。
+- 为 `learning-resource-flow` 新增 `scripts/run_resource_flow.py`，支持接收 `learning-resource-intent/v1` 结构化意图，先调用已优化站点 source，再按候选阈值决定是否进入通用网络搜索分支。
+- 新增 source-first 离线回归用例：SmartEdu 样例候选不足时，流程自动接收 `web-learning-search` 标准化后的 agent 搜索结果，并继续进入 analyzer、ranker、selector。
+- 将 source-first 的 web fallback 后半段接入完整链路：`web-learning-search -> resource-source-discovery -> web-resource-profiler -> generic-web-source`；流程会保留 `web-candidates.json`、`source-discovery.json`、`site-profile.json`、`generic-candidates.json` 等工作文件用于调试。
+- 更新 `learning-resource-flow` 主说明、`source-policy.md` 和 `flow-cases.md`：标准流程从“教材类/主题类”分支改为“意图解构 -> 已优化 source 优先 -> 网络搜索补充 -> 统一分析评分选择”。

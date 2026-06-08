@@ -13,8 +13,9 @@
 ```text
 learning-resource-intent
   -> local-library-search           # 如已有外部索引，先检索本地候选
+  -> smartedu-resources site-profile
   -> smartedu-resources             # SmartEdu 站点级 source，教材是站内资源分支
-  -> web-learning-search            # 当 agent 已有通用搜索结果时标准化其他候选
+  -> web-learning-search            # SmartEdu 候选不足或用户需要更多来源时再进入
   -> resource-source-discovery      # 对通用搜索结果中的资源站做粗筛
   -> web-resource-profiler          # 对高价值来源做结构分析
   -> generic-web-source             # 仅对可通用抽取来源生成直链候选
@@ -52,8 +53,10 @@ learning-resource-intent
 ```text
 learning-resource-intent
   -> local-library-search           # 如已有外部索引，先检索本地候选
-  -> smartedu-resources             # SmartEdu 官方平台资源可作为候选来源之一
-  -> web-learning-search
+  -> smartedu-resources site-profile
+  -> smartedu-resources             # 先查已优化官方平台 source
+  -> candidate threshold check
+  -> web-learning-search            # 候选太少或质量不足时再进入
   -> resource-source-discovery
   -> web-resource-profiler
   -> generic-web-source             # 仅对简单资源站直链资源生成候选
@@ -108,3 +111,27 @@ learning-resource-intent
 ```
 
 明显下载器、破解、广告或成人化来源应进入 `rejected_sources`。
+
+## 用例 6：已优化来源不足后网络补充
+
+用户：
+
+```text
+给 8 岁孩子找可打印四则混合运算练习题
+```
+
+期望：
+
+```text
+learning-resource-intent
+  -> smartedu-resources site-profile
+  -> smartedu-resources search-resources
+  -> 若候选少于阈值
+  -> agent web search
+  -> web-learning-search
+  -> learning-resource-analyzer
+  -> learning-resource-ranker
+  -> learning-resource-selector
+```
+
+如果当前环境不能联网搜索，流程应输出 `needs_web_search=true` 和建议查询词，由 agent 使用自身搜索能力获取搜索结果后继续，而不是在 source skill 内强制绑定某个搜索引擎。

@@ -14,6 +14,8 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 - 用户提出学习资源需求时，优先进入本 skill。
 - 不要只调用某一个来源 skill 后就结束。
 - 来源选择保持类型无关、主题无关和格式无关；具体来源作为候选来源参与排序。
+- 识别到用户意图后，先解构为结构化任务，再优先查询已经优化好的站点 source skills。
+- 已优化来源没有候选、候选太少或质量不足时，再进入通用网络搜索、来源发现和网页结构分析。
 - 搜索候选后必须继续进入 `learning-resource-analyzer` 和 `learning-resource-ranker`。
 - 除非用户明确确认下载，否则搜索和评分阶段不直接批量下载。
 
@@ -35,25 +37,20 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 
 ## 标准调用链
 
-### 教材类请求
-
-适用：
-
-- 查找教材
-- 搜索课本
-- 电子教材
-- 人教版/统编版/北师大版等版本教材
-
 流程：
 
 ```text
 用户请求
-  -> learning-resource-intent
+  -> learning-resource-intent        # 模型分析、解构、必要时追问
   -> local-library-search           # 若已有外部索引，先检索本地候选
-  -> source skills 候选搜索         # SmartEdu 站点统一走 smartedu-resources
-  -> resource-source-discovery      # 对通用搜索结果做来源级粗筛
-  -> web-resource-profiler          # 对高价值未知资源站做结构分析
-  -> generic-web-source             # 对 profiler 判定可通用抽取的来源生成候选
+  -> source profiles                # 读取已优化站点 source 的能力画像
+  -> optimized source skills        # 先查询已接入、已优化的站点来源
+  -> candidate threshold check      # 候选太少或质量不足
+  -> agent web search               # 再使用 agent 通用搜索能力获取网络搜索结果
+  -> web-learning-search            # 标准化搜索结果候选
+  -> resource-source-discovery      # 从搜索结果中发现高价值资源站
+  -> web-resource-profiler          # 分析未知资源站结构
+  -> generic-web-source             # 简单资源站抽取直链候选
   -> learning-resource-analyzer
   -> learning-resource-ranker
   -> learning-resource-selector
@@ -63,38 +60,18 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
   -> 归档成功后进入 learning-library-index
 ```
 
-当前 SmartEdu 站点来源统一由 `smartedu-resources` 承接。早期教材脚本只作为该站点内部适配能力保留，不应作为外部独立来源参与路由。后续新增其他资源站后，应和 `smartedu-resources` 一起进入候选和评分。
+当前 SmartEdu 站点来源统一由 `smartedu-resources` 承接。早期教材脚本只作为该站点内部适配能力保留，不应作为外部独立来源参与路由。后续新增其他站点 source 后，都进入 `source profiles -> optimized source skills` 阶段，不需要改写全局意图逻辑。
 
 如果用户直接说“下载人教版小学三年级数学上册”，也应先确认候选唯一性；候选唯一、质量高且来源明确时，才进入下载。
 
-### 主题学习类请求
+## Source-first 执行规则
 
-适用：
-
-- 四则运算练习题
-- 恐龙百科视频
-- 唐诗宋词启蒙音频
-- 儿歌、绘本、识字、科学启蒙等
-
-流程：
-
-```text
-用户请求
-  -> learning-resource-intent
-  -> local-library-search           # 若已有外部索引，先检索本地候选
-  -> smartedu-resources             # 若需求适合 SmartEdu 官方平台资源
-  -> web-learning-search
-  -> resource-source-discovery      # 找出值得 profiler 深挖的资源站
-  -> web-resource-profiler
-  -> generic-web-source             # 对简单资源站抽取资源直链候选
-  -> learning-resource-analyzer
-  -> learning-resource-ranker
-  -> learning-resource-selector
-  -> 给用户展示排序后的候选
-  -> 用户确认后进入 learning-resource-downloader
-  -> 下载成功后进入 learning-library-organizer
-  -> 归档成功后进入 learning-library-index
-```
+1. `learning-resource-intent` 先判断是否需要追问；需要追问时立即停止。
+2. 需求明确后，先查询本地资料库和已优化站点 source。
+3. 已优化 source 的候选必须统一进入 analyzer/ranker，不因为“官方”就直接跳过评分。
+4. 若已优化 source 候选少于阈值、质量低、类型不匹配或用户要求更多来源，再让 agent 执行通用网络搜索。
+5. 通用搜索结果先交给 `web-learning-search` 标准化，再进入来源发现、站点画像、通用抽取。
+6. 所有来源候选合并后统一分析、评分、展示给用户选择。
 
 ## 追问规则
 
@@ -113,7 +90,39 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 - 核心学习主题是什么？
 - 需要练习题、视频、音频、图片，还是课件？
 
-## 脚本化教材测试链路
+## 脚本化通用测试链路
+
+通用 source-first 流程测试：
+
+```bash
+python3 skills/learning-resource-flow/scripts/run_resource_flow.py \
+  --intent-json intent.json \
+  --smartedu-search-response-json skills/smartedu-resources/references/sample-search-response.json \
+  --web-search-results-json web-results.json \
+  --web-profile-html-file skills/web-resource-profiler/references/sample-resource-page.html \
+  --min-source-candidates 3
+```
+
+该脚本接收 `learning-resource-intent/v1` 结构化 JSON，执行：
+
+```text
+smartedu-resources site-profile
+  -> smartedu-resources 候选查询
+  -> 候选数量阈值判断
+  -> web-learning-search fallback
+  -> resource-source-discovery
+  -> web-resource-profiler
+  -> generic-web-source
+  -> learning-resource-analyzer
+  -> learning-resource-ranker
+  -> learning-resource-selector
+```
+
+如果未提供 `--web-search-results-json` 且已优化 source 候选不足，脚本会输出 `needs_web_search=true`，由 agent 使用自身通用搜索能力拿到搜索结果后再继续。
+
+真实运行时通常不传 `--web-profile-html-file`，由 profiler 联网分析来源页面；离线测试时才传本地 HTML fixture。
+
+## 脚本化教材兼容链路
 
 为了在 OpenClaw 中测试当前已实现的官方教材来源链路，可使用：
 
