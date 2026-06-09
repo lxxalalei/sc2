@@ -349,17 +349,17 @@ Source skill 统一职责：
 
 优先级清单：
 
-- [ ] P1：补齐 SmartEdu 详情探测矩阵。基于 `x-search` 返回项记录 `tab_code`、`resource_type`、`resource_type_name`、`catalog`、`subCatalog`、`contentType`、详情页 URL、资源 ID 字段和可尝试的详情 API 模板，输出每个栏目“公开可取 / 需要授权 / 模板未知 / 无文件项”的结论。
-- [ ] P1：新增低频详情探测入口。建议在 `smartedu-resources` 增加 `detail-probe` 子命令，输入搜索响应 JSON 或 `--query`，输出每个候选尝试过的详情 URL、HTTP 状态、是否拿到 JSON、是否包含 `ti_items`、失败原因；只保存脱敏诊断，不保存 token、cookie、MAC 或 `x-nd-auth`。
-- [ ] P1：增强 `search-resources --fetch-details`。先按搜索项真实字段推断详情模板，不再只依赖少量固定 URL；详情失败时把 `403/404/模板缺失/JSON 无 ti_items` 分类写入 `detail_failures`，并保留原搜索候选进入评分。
-- [ ] P1：把详情可访问性写回候选和站点索引。候选 `raw.smartedu_detail` 应包含 `detail_status`、`detail_access_policy`、`detail_endpoint_family` 和 `file_item_count`；`site-index` 聚合每类 route 的详情成功率和授权需求。
+- [x] P1：补齐 SmartEdu 详情探测矩阵。基于 `x-search` 返回项记录 `tab_code`、`resource_type`、`resource_type_name`、`catalog`、`subCatalog`、`contentType`、详情页 URL、资源 ID 字段和可尝试的详情 API 模板，输出每个栏目“公开可取 / 需要授权 / 模板未知 / 无文件项”的结论。
+- [x] P1：新增低频详情探测入口。已在 `smartedu-resources` 增加 `detail-probe` 子命令，输入搜索响应 JSON 或 `--query`，输出每个候选尝试过的详情 URL、HTTP 状态、是否拿到 JSON、是否包含 `ti_items`、失败原因；只保存脱敏诊断，不保存 token、cookie、MAC 或 `x-nd-auth`。
+- [ ] P1：继续增强 `search-resources --fetch-details`。当前已完成搜索项显式详情 JSON URL、详情页 URL 字段反推、详情失败分类、候选保留和状态回写；后续仍需按详情页 HTML/JS 线索推断更多接口模板，进一步减少对固定 URL 模板的依赖。
+- [x] P1：把详情可访问性写回候选和站点索引。候选 `raw.smartedu_detail` 已包含 `detail_status`、`detail_access_policy`、`detail_endpoint_family` 和 `file_item_count`；`site-index` 可聚合每类 route 的详情成功率和授权需求。
 - [x] P2：设计浏览器会话入口。新增独立脚本 `skills/smartedu-resources/scripts/smartedu_browser_session.py`，只负责登录态获取、会话检查、授权请求代理和脱敏导出，不直接做资源评分和资料库写入。
 - [x] P2：浏览器会话命令应至少包含 `login`、`check`、`export-context`、`request` 四个入口。`login` 让用户在浏览器中完成正常登录；`check` 验证当前会话能否访问搜索、详情和 NDR 文件探测；`export-context` 只导出可复用的脱敏会话摘要或本地 state 路径；`request` 用浏览器上下文低频请求指定 URL，用于详情 JSON 和 `x-nd-auth` 短时签名场景。
 - [x] P2：浏览器状态保存到工作目录。默认使用 `.learning-resource-work/smartedu-browser/state.json` 和 `.learning-resource-work/smartedu-browser/session-summary.json`；前者视为敏感运行态文件，不进 git、不进 skill 包，后者只能记录 `has_cookie=true`、过期时间、域名覆盖和最近检查结果。
 - [x] P2：安全边界固定。项目文件、日志、候选 JSON、计划文档不得落地原始账号、密码、cookie、MAC、Authorization、`x-nd-auth`；命令输出只允许记录 `auth_context=true/false`、HTTP 状态、资源域名和脱敏错误。
 - [ ] P3：把浏览器会话接入详情展开。`search-resources --fetch-details` 增加可选 `--browser-state` 或 `--browser-request` 参数；未提供时仍走公开 HTTP；提供后只对公开方式失败的详情做补充请求，默认低频、限量、可中断。
 - [ ] P3：把浏览器会话接入下载探测。downloader 在 `--allow-auth` 且提供浏览器会话时，优先做 `probe-only`，确认 `content-type`、大小、range 支持和过期策略，再允许正式下载；不要把浏览器会话作为静默默认行为。
-- [ ] P3：补齐离线回归。为 `detail-probe`、详情失败分类、浏览器 state 脱敏、`site-index` 详情覆盖聚合增加 fixture 和 smoke test；浏览器真实登录只做人工联调，不进入默认离线测试。
+- [x] P3：补齐离线回归。已为 `detail-probe`、详情失败分类、浏览器 state 脱敏、`site-index` 详情覆盖聚合增加 fixture 和 smoke test；浏览器真实登录只做人工联调，不进入默认离线测试。
 
 SmartEdu 详情展开具体要做什么：
 
@@ -574,3 +574,8 @@ SmartEdu 详情展开具体要做什么：
 - 将 `smartedu-resources` 默认搜索端点切换为 `x-search`，请求体采用 `identity=家长`、`identity_code=GUARDIAN`、全站 tab_codes、`combine_intentions=[]` 和 `combine_resources=[]`；旧 `resource-gateway` 端点保留为 fallback。
 - 增强 SmartEdu 搜索候选归一化：清理搜索高亮 HTML，从 `tags` 和 `extra.providers` 中抽取学段、年级、学科、版本、册次和 provider，并过滤 UUID 形式的非文件格式字段。
 - 真实低频详情追踪验证：`search-resources --fetch-details` 可完成搜索，但 `prepareLesson` 详情 JSON 在未授权状态下仍返回 403；当前无账号态可稳定完成候选发现，详情展开和私有文件下载仍需浏览器会话、`x-nd-auth` 或其他授权上下文。
+- 新增并固化 SmartEdu `detail-probe` 详情探测入口，输出 `smartedu-detail-probe/v1`，可对搜索候选记录详情 URL 尝试、HTTP 状态、`ti_items` 命中、详情状态分类和访问策略。
+- 为 `detail-probe` 增加 `detail_matrix` 聚合输出，按 `tab_code`、资源类型、栏目、`contentType` 和详情模板族汇总“公开可取 / 需要授权 / 模板未知 / 无文件项”等结论。
+- 增强 `search-resources --fetch-details` 与 route 扫描详情追踪：成功展开和失败保留的候选都会写入 `raw.smartedu_detail`，`detail_failures` 记录 `detail_status`、`detail_access_policy`、`detail_endpoint_family` 和脱敏错误。
+- 增强详情 URL 推断：`search-resources --fetch-details` 和 `detail-probe` 会优先使用搜索项显式详情 JSON URL，并可从详情页 URL 的 `contentId`、`catalogType`、`subCatalog`、`contentType` 反推详情身份字段；新增离线 HTTP fixture 验证显式详情 JSON URL 可展开为候选。
+- 增强 `site-index` 详情覆盖聚合：合并带详情追踪的 `scan-site` 结果时，输出 `detail_coverage` 和 route 扫描摘要中的详情状态/访问策略计数。

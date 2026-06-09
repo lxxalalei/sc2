@@ -531,10 +531,15 @@ class SmokeRunner:
         page_profile_json = self.work_dir / "smartedu-page-profile.json"
         catalog_scan_json = self.work_dir / "smartedu-catalog-scan.json"
         site_scan_json = self.work_dir / "smartedu-site-scan.json"
+        site_scan_detail_json = self.work_dir / "smartedu-site-scan-detail.json"
+        site_index_detail_json = self.work_dir / "smartedu-site-index-detail.json"
         textbook_candidates_json = self.work_dir / "smartedu-textbook-candidates.json"
         textbook_work_dir = self.work_dir / "smartedu-textbook-work"
         search_candidates_json = self.work_dir / "smartedu-search-candidates.json"
         search_detail_candidates_json = self.work_dir / "smartedu-search-detail-candidates.json"
+        explicit_detail_search_json = self.work_dir / "smartedu-explicit-detail-search.json"
+        explicit_detail_output_json = self.work_dir / "smartedu-explicit-detail-output.json"
+        explicit_detail_server_dir = self.work_dir / "smartedu-explicit-detail-http"
         detail_probe_json = self.work_dir / "smartedu-detail-probe.json"
         search_detail_dir = self.work_dir / "smartedu-search-details"
         candidates_json = self.work_dir / "smartedu-resource-candidates.json"
@@ -797,6 +802,65 @@ class SmokeRunner:
         assert_true(search_detail_data.get("summary", {}).get("details_fetched") == 1, "搜索详情追踪应命中 1 个详情")
         assert_true(search_detail_data.get("summary", {}).get("detail_failures") == 1, "缺失详情应记录失败并保留搜索候选")
         assert_true(any(item.get("downloadable") is True for item in detail_candidates), "详情文件项候选应可进入后续下载判断")
+        detail_summaries = [
+            item.get("raw", {}).get("smartedu_detail")
+            for item in detail_candidates
+            if isinstance(item.get("raw", {}).get("smartedu_detail"), dict)
+        ]
+        assert_true(any(item.get("detail_status") == "ok_with_file_items" for item in detail_summaries), "详情候选应回写可展开状态")
+        assert_true(any(item.get("detail_status") == "detail_not_found_in_dir" for item in detail_summaries), "详情失败候选应回写失败分类")
+
+        explicit_detail_server_dir.mkdir(parents=True, exist_ok=True)
+        explicit_detail_fixture = load_json(sample_detail)
+        explicit_detail_fixture["id"] = "explicit-math-001"
+        write_json(explicit_detail_server_dir / "explicit-detail.json", explicit_detail_fixture)
+        explicit_server, explicit_thread, explicit_base_url = start_static_server(explicit_detail_server_dir)
+        try:
+            write_json(
+                explicit_detail_search_json,
+                {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "显式详情 URL 数学资源",
+                                "detailUrl": "https://basic.smartedu.cn/resourceCenter/detail?contentType=NDR_Explicit&contentId=explicit-math-001&catalogType=resourceCenter&subCatalog=paper",
+                                "detailJsonUrl": f"{explicit_base_url}/explicit-detail.json",
+                                "resourceTypeName": "文档",
+                                "subjectName": "数学",
+                            }
+                        ]
+                    }
+                },
+            )
+            self.command(
+                "smartedu-resources-explicit-detail-url",
+                [
+                    sys.executable,
+                    self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                    "search-resources",
+                    "--query",
+                    "显式详情 URL 数学资源",
+                    "--search-response-json",
+                    str(explicit_detail_search_json),
+                    "--fetch-details",
+                    "-o",
+                    str(explicit_detail_output_json),
+                ],
+            )
+        finally:
+            explicit_server.shutdown()
+            explicit_server.server_close()
+            explicit_thread.join(timeout=5)
+        explicit_detail_data = load_json(explicit_detail_output_json)
+        explicit_candidates = explicit_detail_data.get("candidates") or []
+        explicit_summaries = [
+            item.get("raw", {}).get("smartedu_detail")
+            for item in explicit_candidates
+            if isinstance(item.get("raw", {}).get("smartedu_detail"), dict)
+        ]
+        assert_true(explicit_detail_data.get("summary", {}).get("details_fetched") == 1, "显式详情 JSON URL 应可直接展开")
+        assert_true(any(item.get("detail_endpoint_family") == "search-item-detail-json" for item in explicit_summaries), "详情摘要应记录显式详情 URL 模板族")
+        assert_true(any(item.get("downloadable") is True for item in explicit_candidates), "显式详情 JSON 应展开为可下载候选")
 
         self.command(
             "smartedu-resources-detail-probe",
@@ -817,12 +881,59 @@ class SmokeRunner:
         )
         detail_probe = load_json(detail_probe_json)
         probes = detail_probe.get("probes") or []
+        detail_matrix = detail_probe.get("detail_matrix") or []
         assert_true(detail_probe.get("detail_probe_schema") == "smartedu-detail-probe/v1", "SmartEdu 应输出详情探测结果")
         assert_true(len(probes) == 2, "详情探测应覆盖搜索候选")
+        assert_true(detail_probe.get("summary", {}).get("matrix_rows") == 2, "详情探测应按候选字段输出矩阵")
         assert_true(detail_probe.get("summary", {}).get("status_counts", {}).get("ok_with_file_items") == 1, "详情探测应识别可展开详情")
         assert_true(detail_probe.get("summary", {}).get("status_counts", {}).get("detail_not_found_in_dir") == 1, "详情探测应识别缺失详情")
+        assert_true(any(row.get("tab_code") == "qualityCourse" and row.get("conclusion") == "公开可取" for row in detail_matrix), "详情矩阵应识别公开可取栏目")
+        assert_true(any(row.get("tab_code") == "basicWork" and row.get("conclusion") == "模板未知" for row in detail_matrix), "详情矩阵应识别模板未知栏目")
         assert_true(probes[0].get("detail_access_policy") == "public_detail", "命中详情的候选应标记公开详情可取")
         assert_true(probes[0].get("file_item_count", 0) >= 3, "详情探测应统计 ti_items 数量")
+
+        self.command(
+            "smartedu-resources-scan-site-details",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "scan-site",
+                "--route-map-json",
+                str(route_map_json),
+                "--type",
+                "qualityCourse",
+                "--query",
+                "三年级数学",
+                "--route-limit",
+                "1",
+                "--search-response-json",
+                str(sample_search),
+                "--fetch-details",
+                "--detail-dir",
+                str(search_detail_dir),
+                "--offline-details-only",
+                "-o",
+                str(site_scan_detail_json),
+            ],
+        )
+        self.command(
+            "smartedu-resources-site-index-detail-coverage",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "site-index",
+                "--route-map-json",
+                str(route_map_json),
+                "--site-scan-json",
+                str(site_scan_detail_json),
+                "-o",
+                str(site_index_detail_json),
+            ],
+        )
+        site_index_detail = load_json(site_index_detail_json)
+        assert_true(site_index_detail.get("summary", {}).get("detail_coverage_routes") == 1, "全站索引应聚合 route 级详情覆盖")
+        assert_true(site_index_detail.get("detail_coverage", [{}])[0].get("detail_status_counts", {}).get("ok_with_file_items") >= 1, "全站索引应统计详情成功状态")
+        assert_true(site_index_detail.get("summary", {}).get("route_scan_summary", {}).get("detail_access_policy_counts", {}).get("public_detail") >= 1, "全站索引应统计详情访问策略")
 
         self.command(
             "smartedu-resources-candidates",

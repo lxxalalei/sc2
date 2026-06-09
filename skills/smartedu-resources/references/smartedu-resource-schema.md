@@ -90,7 +90,35 @@
 }
 ```
 
-如果某个搜索项无法获取详情，应保留搜索候选并在 `detail_failures` 中记录失败原因。
+如果某个搜索项无法获取详情，应保留搜索候选并在 `detail_failures` 中记录失败原因。成功和失败候选都会在 `raw.smartedu_detail` 写入脱敏详情摘要：
+
+```json
+{
+  "raw": {
+    "smartedu_detail": {
+      "detail_status": "ok_with_file_items",
+      "detail_access_policy": "public_detail",
+      "detail_endpoint_family": "s-file-ndrv2-details",
+      "file_item_count": 3,
+      "parsed_candidate_count": 3,
+      "attempt_count": 1,
+      "error": ""
+    }
+  }
+}
+```
+
+`detail_failures` 同样使用 `detail_status`、`detail_access_policy`、`detail_endpoint_family`、`file_item_count` 和脱敏 `error` 分类问题，不记录 token、cookie、Authorization、MAC 或 `x-nd-auth` 原文。
+
+详情追踪的尝试 URL 按以下顺序生成：
+
+- 搜索项中显式出现的详情 JSON URL，例如 `detailJsonUrl`、`detail_json_url` 或嵌套对象里的 `*/details/*.json`。
+- 搜索项详情页 URL 中的 `contentId`、`catalogType`、`subCatalog` 和 `contentType` 反推出的身份字段。
+- 默认 `s-file-ndrv2-details` 模板。
+
+当命中搜索项显式详情 JSON URL 时，`detail_endpoint_family` 记录为 `search-item-detail-json`；默认模板记录为 `s-file-ndrv2-details`。
+
+如果搜索项没有顶层资源 ID，但详情页 URL 可解析出 `contentId`，仍可进入详情追踪和探测矩阵。
 
 ## 授权上下文
 
@@ -280,6 +308,7 @@ SMARTEDU_SDP_APP_ID
   "candidates": [],
   "failures": [],
   "scan_summary": {},
+  "detail_coverage": [],
   "summary": {
     "routes": 0,
     "search_then_detail_routes": 0,
@@ -288,12 +317,13 @@ SMARTEDU_SDP_APP_ID
     "candidates": 0,
     "failures": 0,
     "route_scan_summary": {},
+    "detail_coverage_routes": 0,
     "auth_context": false
   }
 }
 ```
 
-`scan_plan` 是给总控或后续批处理使用的轻量执行计划；`routes` 保留完整 route 原始上下文。`coverage` 用于判断当前 SmartEdu source 是否覆盖全站栏目、有哪些扫描策略、哪些 tab code 和命令能力仍需真实运行时验证。
+`scan_plan` 是给总控或后续批处理使用的轻量执行计划；`routes` 保留完整 route 原始上下文。`coverage` 用于判断当前 SmartEdu source 是否覆盖全站栏目、有哪些扫描策略、哪些 tab code 和命令能力仍需真实运行时验证。合并带详情追踪的 `scan-site` 结果时，`detail_coverage` 会按 route 汇总 `detail_status_counts`、`detail_access_policy_counts`、`details_fetched`、`detail_items_seen` 和 `detail_failures`，用于判断哪些栏目公开可取、需要授权或模板未知。
 
 ## 详情探测
 
@@ -310,11 +340,15 @@ SMARTEDU_SDP_APP_ID
     {
       "resource_id": "qc-math-001",
       "title": "小学数学 三年级 上册 分数的初步认识",
+      "tab_code": "qualityCourse",
       "catalog": "qualityCourse",
       "sub_catalog": "course",
       "content_type": "NDR_NationalLesson",
+      "resource_type": "NDR_NationalLesson",
+      "resource_type_name": "视频",
       "detail_page": "https://basic.smartedu.cn/qualityCourse/detail?...",
       "detail_endpoint_family": "s-file-ndrv2-details",
+      "detail_url_templates": [],
       "detail_status": "ok_with_file_items",
       "detail_access_policy": "public_detail",
       "attempts": [],
@@ -323,9 +357,29 @@ SMARTEDU_SDP_APP_ID
       "error": ""
     }
   ],
+  "detail_matrix": [
+    {
+      "tab_code": "qualityCourse",
+      "resource_type": "NDR_NationalLesson",
+      "resource_type_name": "视频",
+      "catalog": "qualityCourse",
+      "sub_catalog": "course",
+      "content_type": "NDR_NationalLesson",
+      "detail_endpoint_family": "s-file-ndrv2-details",
+      "detail_url_templates": [],
+      "search_items_seen": 1,
+      "sample_resource_ids": ["qc-math-001"],
+      "detail_status_counts": {"ok_with_file_items": 1},
+      "detail_access_policy_counts": {"public_detail": 1},
+      "file_item_count": 3,
+      "parsed_candidate_count": 3,
+      "conclusion": "公开可取"
+    }
+  ],
   "summary": {
     "search_items_seen": 1,
     "probes": 1,
+    "matrix_rows": 1,
     "status_counts": {"ok_with_file_items": 1},
     "access_policy_counts": {"public_detail": 1},
     "details_accessible": 1,
@@ -336,6 +390,8 @@ SMARTEDU_SDP_APP_ID
   }
 }
 ```
+
+`detail_matrix` 按 `tab_code`、`resource_type`、`resource_type_name`、`catalog`、`sub_catalog` 和 `content_type` 聚合探测结果，输出每类候选的详情模板族、状态计数、访问策略计数、文件项数量和结论。`detail_url_templates` 包含搜索项显式详情 JSON URL 和默认模板去重后的尝试列表。`conclusion` 面向后续 source registry 与人工联调，可取值包括 `公开可取`、`需要授权`、`模板未知`、`无文件项` 和 `需运行时验证`。
 
 `detail_status` 当前分类：
 

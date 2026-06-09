@@ -479,6 +479,8 @@ def candidate_lists(data: Any) -> list[list[dict[str, Any]]]:
 
 def is_search_item_like(item: dict[str, Any]) -> bool:
     has_id = any(item.get(key) for key in ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"])
+    if not has_id:
+        has_id = bool(identity_from_detail_page_url(detail_page_from_search_item(item)).get("resource_id"))
     has_title = any(item.get(key) for key in ["title", "name", "content_name", "contentName", "resource_name", "resourceName", "global_title"])
     has_type = any(item.get(key) for key in ["catalog", "catalog_type", "catalogType", "tab_code", "tabCode", "resource_type", "resourceType", "content_type", "contentType"])
     return bool(has_id and (has_title or has_type))
@@ -490,7 +492,7 @@ def extract_search_items(data: Any, limit: int) -> list[dict[str, Any]]:
     for row in [item for group in candidate_lists(data) for item in group]:
         if not is_search_item_like(row):
             continue
-        key = norm(first_value(row, ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"]))
+        key = norm(first_value(row, ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"])) or identity_from_detail_page_url(detail_page_from_search_item(row)).get("resource_id", "")
         title = norm(first_value(row, ["title", "name", "content_name", "contentName", "resource_name", "resourceName", "global_title"]))
         fingerprint = f"{key}:{title}"
         if fingerprint in seen:
@@ -550,6 +552,53 @@ def detail_page_from_search_item(item: dict[str, Any]) -> str:
     )
 
 
+def explicit_detail_json_urls(item: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+
+    def walk(node: Any, key_hint: str = "") -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, key)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, key_hint)
+        elif isinstance(node, str):
+            value = html.unescape(node.strip())
+            if not value.startswith(("http://", "https://")):
+                return
+            lowered_key = key_hint.lower()
+            lowered_value = value.lower()
+            if (("detail" in lowered_key or "json" in lowered_key) and ".json" in lowered_value) or "/details/" in lowered_value:
+                urls.append(value)
+
+    walk(item)
+    return list(dict.fromkeys(urls))
+
+
+def identity_from_detail_page_url(url: str) -> dict[str, str]:
+    if not url.startswith(("http://", "https://")):
+        return {}
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qs(parsed.query)
+
+    def query_value(*names: str) -> str:
+        for name in names:
+            values = query.get(name)
+            if values:
+                return norm(values[0])
+        return ""
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    catalog_from_path = path_parts[0] if path_parts else ""
+    return {
+        "resource_id": query_value("contentId", "content_id", "resourceId", "resource_id", "id"),
+        "tab_code": query_value("tabCode", "tab_code", "catalogType", "catalog") or catalog_from_path,
+        "catalog": query_value("catalogType", "catalog") or catalog_from_path,
+        "sub_catalog": query_value("subCatalog", "sub_catalog"),
+        "content_type": query_value("contentType", "content_type", "resourceType", "resource_type"),
+    }
+
+
 def search_item_to_candidate(item: dict[str, Any], query: str, filters: dict[str, Any]) -> dict[str, Any]:
     source_url = detail_page_from_search_item(item)
     fmt = infer_format_from_item(item, source_url)
@@ -590,11 +639,17 @@ def search_item_to_candidate(item: dict[str, Any], query: str, filters: dict[str
 
 
 def search_item_identity(item: dict[str, Any]) -> dict[str, str]:
+    page_identity = identity_from_detail_page_url(detail_page_from_search_item(item))
+    catalog = norm(first_value(item, ["catalog", "catalog_type", "catalogType", "tab_code", "tabCode", "channel_code", "channelCode"])) or page_identity.get("catalog") or "syncClassroom"
+    resource_type = norm(first_value(item, ["resource_type", "resourceType", "resource_type_code", "resourceTypeCode", "content_type", "contentType"]))
     return {
-        "resource_id": norm(first_value(item, ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"])),
-        "catalog": norm(first_value(item, ["catalog", "catalog_type", "catalogType", "tab_code", "tabCode", "channel_code", "channelCode"])) or "syncClassroom",
-        "sub_catalog": norm(first_value(item, ["sub_catalog", "subCatalog", "sub_catalog_code", "subCatalogCode"])),
-        "content_type": norm(first_value(item, ["content_type", "contentType", "resource_type", "resourceType", "resource_type_code", "resourceTypeCode"])),
+        "resource_id": norm(first_value(item, ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"])) or page_identity.get("resource_id", ""),
+        "tab_code": norm(first_value(item, ["tab_code", "tabCode", "channel_code", "channelCode"])) or page_identity.get("tab_code", "") or catalog,
+        "catalog": catalog,
+        "sub_catalog": norm(first_value(item, ["sub_catalog", "subCatalog", "sub_catalog_code", "subCatalogCode"])) or page_identity.get("sub_catalog", ""),
+        "content_type": norm(first_value(item, ["content_type", "contentType"])) or resource_type or page_identity.get("content_type", ""),
+        "resource_type": resource_type,
+        "resource_type_name": clean_html_text(first_value(item, ["resource_type_name", "resourceTypeName", "content_type_name", "contentTypeName"])),
     }
 
 
@@ -614,6 +669,29 @@ def detail_urls_for_identity(identity: dict[str, str]) -> list[dict[str, str]]:
             }
         )
     return urls
+
+
+def detail_url_attempts_for_search_item(item: dict[str, Any], identity: dict[str, str]) -> list[dict[str, str]]:
+    attempts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, url in enumerate(explicit_detail_json_urls(item), 1):
+        if url in seen:
+            continue
+        seen.add(url)
+        attempts.append(
+            {
+                "url": url,
+                "endpoint_family": "search-item-detail-json",
+                "template_index": f"explicit-{index}",
+            }
+        )
+    for attempt in detail_urls_for_identity(identity):
+        url = attempt["url"]
+        if url in seen:
+            continue
+        seen.add(url)
+        attempts.append(attempt)
+    return attempts
 
 
 def classify_detail_probe(
@@ -652,6 +730,102 @@ def detail_access_policy(status: str, via_browser: bool = False) -> str:
     return "runtime_validation_needed"
 
 
+def detail_summary_for_probe(probe: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "detail_status": probe.get("detail_status") or "unknown",
+        "detail_access_policy": probe.get("detail_access_policy") or "runtime_validation_needed",
+        "detail_endpoint_family": probe.get("detail_endpoint_family") or DETAIL_ENDPOINT_FAMILY,
+        "file_item_count": int(probe.get("file_item_count") or 0),
+        "parsed_candidate_count": int(probe.get("parsed_candidate_count") or 0),
+        "attempt_count": len(probe.get("attempts") or []),
+        "error": probe.get("error") or "",
+    }
+
+
+def annotate_candidate_detail(candidate: dict[str, Any], detail_summary: dict[str, Any]) -> dict[str, Any]:
+    raw = candidate.setdefault("raw", {})
+    if isinstance(raw, dict):
+        raw["smartedu_detail"] = detail_summary
+    return candidate
+
+
+def detail_failure_for_probe(probe: dict[str, Any], identity: dict[str, str]) -> dict[str, Any]:
+    summary = detail_summary_for_probe(probe)
+    return {
+        "resource_id": identity.get("resource_id", ""),
+        "catalog": identity.get("catalog", ""),
+        "detail_status": summary["detail_status"],
+        "detail_access_policy": summary["detail_access_policy"],
+        "detail_endpoint_family": summary["detail_endpoint_family"],
+        "file_item_count": summary["file_item_count"],
+        "error": summary["error"] or summary["detail_status"],
+    }
+
+
+def detail_matrix_conclusion(status_counts: dict[str, int], access_policy_counts: dict[str, int]) -> str:
+    if status_counts.get("ok_with_file_items", 0) > 0:
+        return "公开可取"
+    if status_counts.get("ok_no_file_items", 0) > 0:
+        return "无文件项"
+    if status_counts.get("requires_auth", 0) > 0 or access_policy_counts.get("requires_auth_context", 0) > 0:
+        return "需要授权"
+    if status_counts.get("detail_not_found_in_dir", 0) > 0 or status_counts.get("not_found", 0) > 0:
+        return "模板未知"
+    if status_counts.get("missing_resource_id", 0) > 0:
+        return "模板未知"
+    return "需运行时验证"
+
+
+def detail_probe_matrix(probes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for probe in probes:
+        tab_code = norm(probe.get("tab_code"))
+        resource_type = norm(probe.get("resource_type"))
+        resource_type_name = norm(probe.get("resource_type_name"))
+        catalog = norm(probe.get("catalog"))
+        sub_catalog = norm(probe.get("sub_catalog"))
+        content_type = norm(probe.get("content_type"))
+        key = "|".join([tab_code, resource_type, resource_type_name, catalog, sub_catalog, content_type])
+        group = groups.setdefault(
+            key,
+            {
+                "tab_code": tab_code,
+                "resource_type": resource_type,
+                "resource_type_name": resource_type_name,
+                "catalog": catalog,
+                "sub_catalog": sub_catalog,
+                "content_type": content_type,
+                "detail_endpoint_family": probe.get("detail_endpoint_family") or DETAIL_ENDPOINT_FAMILY,
+                "detail_url_templates": probe.get("detail_url_templates") or [],
+                "resource_ids": [],
+                "probe_count": 0,
+                "detail_status_values": [],
+                "detail_access_policy_values": [],
+                "file_item_count": 0,
+                "parsed_candidate_count": 0,
+            },
+        )
+        if probe.get("resource_id"):
+            group["resource_ids"].append(probe.get("resource_id"))
+        group["probe_count"] += 1
+        group["detail_status_values"].append(norm(probe.get("detail_status")))
+        group["detail_access_policy_values"].append(norm(probe.get("detail_access_policy")))
+        group["file_item_count"] += int(probe.get("file_item_count") or 0)
+        group["parsed_candidate_count"] += int(probe.get("parsed_candidate_count") or 0)
+    matrix: list[dict[str, Any]] = []
+    for group in groups.values():
+        status_counts = count_values(group.pop("detail_status_values"))
+        access_policy_counts = count_values(group.pop("detail_access_policy_values"))
+        resource_ids = list(dict.fromkeys(group.pop("resource_ids")))
+        group["search_items_seen"] = int(group.pop("probe_count") or 0)
+        group["sample_resource_ids"] = resource_ids[:5]
+        group["detail_status_counts"] = status_counts
+        group["detail_access_policy_counts"] = access_policy_counts
+        group["conclusion"] = detail_matrix_conclusion(status_counts, access_policy_counts)
+        matrix.append(group)
+    return sorted(matrix, key=lambda item: (item.get("tab_code") or "", item.get("resource_type") or "", item.get("content_type") or ""))
+
+
 def probe_detail_for_search_item(
     item: dict[str, Any],
     args: argparse.Namespace,
@@ -663,11 +837,15 @@ def probe_detail_for_search_item(
     result: dict[str, Any] = {
         "resource_id": identity.get("resource_id") or "",
         "title": title,
+        "tab_code": identity.get("tab_code") or "",
         "catalog": identity.get("catalog") or "",
         "sub_catalog": identity.get("sub_catalog") or "",
         "content_type": identity.get("content_type") or "",
+        "resource_type": identity.get("resource_type") or "",
+        "resource_type_name": identity.get("resource_type_name") or "",
         "detail_page": detail_page_from_search_item(item),
         "detail_endpoint_family": DETAIL_ENDPOINT_FAMILY,
+        "detail_url_templates": [attempt["url"] for attempt in detail_url_attempts_for_search_item(item, identity)],
         "detail_status": "missing_resource_id" if not identity.get("resource_id") else "not_attempted",
         "detail_access_policy": "template_unknown" if not identity.get("resource_id") else "runtime_validation_needed",
         "attempts": [],
@@ -709,7 +887,7 @@ def probe_detail_for_search_item(
         result.update({"detail_status": status, "detail_access_policy": detail_access_policy(status), "error": "detail not found in detail dir"})
         return result
 
-    for attempt in detail_urls_for_identity(identity):
+    for attempt in detail_url_attempts_for_search_item(item, identity):
         detail, status_code, content_type, error = request_json_status(
             attempt["url"],
             access_token=access_token,
@@ -743,6 +921,7 @@ def probe_detail_for_search_item(
                 {
                     "detail_status": classified,
                     "detail_access_policy": detail_access_policy(classified),
+                    "detail_endpoint_family": attempt["endpoint_family"],
                     "file_item_count": seen,
                     "parsed_candidate_count": len(candidates),
                     "error": error,
@@ -778,6 +957,7 @@ def probe_detail_for_search_item(
                     {
                         "detail_status": browser_classified,
                         "detail_access_policy": detail_access_policy(browser_classified, via_browser=True),
+                        "detail_endpoint_family": attempt["endpoint_family"],
                         "file_item_count": browser_seen,
                         "parsed_candidate_count": len(browser_candidates),
                         "error": browser_error,
@@ -789,6 +969,7 @@ def probe_detail_for_search_item(
                 {
                     "detail_status": classified,
                     "detail_access_policy": detail_access_policy(classified),
+                    "detail_endpoint_family": attempt["endpoint_family"],
                     "file_item_count": seen,
                     "parsed_candidate_count": len(candidates),
                     "error": error,
@@ -799,8 +980,42 @@ def probe_detail_for_search_item(
     if result["detail_status"] == "not_attempted" and result["attempts"]:
         last = result["attempts"][-1]
         status = classify_detail_probe(last.get("status"), None, last.get("error") or "")
-        result.update({"detail_status": status, "detail_access_policy": detail_access_policy(status), "error": last.get("error") or ""})
+        result.update(
+            {
+                "detail_status": status,
+                "detail_access_policy": detail_access_policy(status),
+                "detail_endpoint_family": last.get("endpoint_family") or DETAIL_ENDPOINT_FAMILY,
+                "error": last.get("error") or "",
+            }
+        )
     return result
+
+
+def fetch_detail_for_search_item(
+    item: dict[str, Any],
+    identity: dict[str, str],
+    args: argparse.Namespace,
+    access_token: str | None,
+    extra_headers: dict[str, str],
+) -> dict[str, Any]:
+    errors: list[str] = []
+    for attempt in detail_url_attempts_for_search_item(item, identity):
+        detail, status_code, _content_type, error = request_json_status(
+            attempt["url"],
+            access_token=access_token,
+            timeout=getattr(args, "timeout", 20),
+            cookie=args.cookie,
+            extra_headers=extra_headers,
+        )
+        if detail is not None:
+            return detail
+        errors.append(f"{attempt['url']}: status={status_code} error={error}")
+        if getattr(args, "browser_state", None) and status_code in {None, 403}:
+            browser_detail, browser_status, _browser_content_type, browser_error = browser_request_json_status(attempt["url"], args.browser_state, timeout=getattr(args, "timeout", 20))
+            if browser_detail is not None:
+                return browser_detail
+            errors.append(f"browser_state {attempt['url']}: status={browser_status} error={browser_error}")
+    raise RuntimeError("; ".join(errors) or "no detail urls to try")
 
 
 def load_detail_from_dir(detail_dir: str | None, identity: dict[str, str]) -> dict[str, Any] | None:
@@ -827,31 +1042,34 @@ def detail_for_search_item(
     args: argparse.Namespace,
     access_token: str | None,
     extra_headers: dict[str, str],
-) -> tuple[dict[str, Any] | None, dict[str, str], str | None]:
+) -> tuple[dict[str, Any] | None, dict[str, str], str | None, dict[str, Any]]:
     identity = search_item_identity(item)
     if not identity["resource_id"]:
-        return None, identity, "missing resource id"
+        probe = probe_detail_for_search_item(item, args, access_token, extra_headers)
+        return None, identity, "missing resource id", probe
     cached = load_detail_from_dir(args.detail_dir, identity)
     if cached is not None:
-        return cached, identity, None
+        probe = probe_detail_for_search_item(item, args, access_token, extra_headers)
+        return cached, identity, None, probe
     if args.offline_details_only:
-        return None, identity, "detail not found in detail dir"
+        probe = probe_detail_for_search_item(item, args, access_token, extra_headers)
+        return None, identity, "detail not found in detail dir", probe
+    probe = probe_detail_for_search_item(item, args, access_token, extra_headers)
+    if probe.get("detail_status") in {"ok_with_file_items", "ok_no_file_items"}:
+        cached_after_probe = load_detail_from_dir(args.detail_dir, identity)
+        if cached_after_probe is not None:
+            return cached_after_probe, identity, None, probe
     try:
         return (
-            fetch_detail(
-                identity["resource_id"],
-                identity["catalog"],
-                access_token,
-                cookie=args.cookie,
-                extra_headers=extra_headers,
-                browser_state=getattr(args, "browser_state", None),
-                timeout=getattr(args, "timeout", 20),
-            ),
+            fetch_detail_for_search_item(item, identity, args, access_token, extra_headers),
             identity,
             None,
+            probe,
         )
     except Exception as exc:
-        return None, identity, str(exc)
+        if not probe.get("error"):
+            probe["error"] = str(exc)
+        return None, identity, str(exc), probe
 
 
 def candidate_title(detail: dict[str, Any], item: dict[str, Any], fmt: str) -> str:
@@ -1173,13 +1391,72 @@ def route_scan_plan(route: dict[str, Any]) -> dict[str, Any]:
 
 def scan_route_summary(route_results: list[dict[str, Any]]) -> dict[str, Any]:
     statuses = count_values([norm(item.get("status")) for item in route_results])
+    detail_status_values: list[str] = []
+    detail_policy_values: list[str] = []
+    for result in route_results:
+        for candidate in result.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            raw = candidate.get("raw") if isinstance(candidate.get("raw"), dict) else {}
+            detail = raw.get("smartedu_detail") if isinstance(raw.get("smartedu_detail"), dict) else {}
+            if detail:
+                detail_status_values.append(norm(detail.get("detail_status")))
+                detail_policy_values.append(norm(detail.get("detail_access_policy")))
+        for failure in result.get("detail_failures") or []:
+            if isinstance(failure, dict):
+                detail_status_values.append(norm(failure.get("detail_status")))
+                detail_policy_values.append(norm(failure.get("detail_access_policy")))
     return {
         "routes_scanned": len(route_results),
         "statuses": statuses,
         "search_items_seen": sum(int(item.get("search_items_seen") or 0) for item in route_results),
         "candidates": sum(len(item.get("candidates") or []) for item in route_results),
         "detail_failures": sum(len(item.get("detail_failures") or []) for item in route_results),
+        "details_fetched": sum(int((item.get("summary") or {}).get("details_fetched") or 0) for item in route_results),
+        "detail_items_seen": sum(int((item.get("summary") or {}).get("detail_items_seen") or 0) for item in route_results),
+        "detail_status_counts": count_values(detail_status_values),
+        "detail_access_policy_counts": count_values(detail_policy_values),
     }
+
+
+def route_detail_coverage(route_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    coverage: list[dict[str, Any]] = []
+    for result in route_results:
+        route = result.get("route") if isinstance(result.get("route"), dict) else {}
+        detail_status_values: list[str] = []
+        detail_policy_values: list[str] = []
+        for candidate in result.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            raw = candidate.get("raw") if isinstance(candidate.get("raw"), dict) else {}
+            detail = raw.get("smartedu_detail") if isinstance(raw.get("smartedu_detail"), dict) else {}
+            if detail:
+                detail_status_values.append(norm(detail.get("detail_status")))
+                detail_policy_values.append(norm(detail.get("detail_access_policy")))
+        for failure in result.get("detail_failures") or []:
+            if isinstance(failure, dict):
+                detail_status_values.append(norm(failure.get("detail_status")))
+                detail_policy_values.append(norm(failure.get("detail_access_policy")))
+        if not detail_status_values and not detail_policy_values:
+            continue
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        coverage.append(
+            {
+                "route_id": route.get("route_id"),
+                "title": route.get("title"),
+                "catalog": route.get("catalog"),
+                "sub_catalog": route.get("sub_catalog"),
+                "type": route.get("type"),
+                "search_tab_code": route.get("search_tab_code"),
+                "search_items_seen": result.get("search_items_seen", 0),
+                "details_fetched": int(summary.get("details_fetched") or 0),
+                "detail_items_seen": int(summary.get("detail_items_seen") or 0),
+                "detail_failures": len(result.get("detail_failures") or []),
+                "detail_status_counts": count_values(detail_status_values),
+                "detail_access_policy_counts": count_values(detail_policy_values),
+            }
+        )
+    return coverage
 
 
 def run_site_index(args: argparse.Namespace) -> int:
@@ -1199,6 +1476,7 @@ def run_site_index(args: argparse.Namespace) -> int:
         failures = [item for item in scan_data.get("failures") or [] if isinstance(item, dict)]
         route_results = [item for item in scan_data.get("routes") or [] if isinstance(item, dict)]
         scan_summary = scan_data.get("summary") if isinstance(scan_data.get("summary"), dict) else {}
+    detail_coverage = route_detail_coverage(route_results)
 
     output = {
         "site_index_schema": "smartedu-site-index/v1",
@@ -1212,6 +1490,7 @@ def run_site_index(args: argparse.Namespace) -> int:
         "candidates": candidates,
         "failures": failures,
         "scan_summary": scan_summary,
+        "detail_coverage": detail_coverage,
         "summary": {
             "routes": len(routes),
             "search_then_detail_routes": sum(1 for item in routes if item.get("scan_strategy") == "search_then_detail"),
@@ -1220,6 +1499,7 @@ def run_site_index(args: argparse.Namespace) -> int:
             "candidates": len(candidates),
             "failures": len(failures),
             "route_scan_summary": scan_route_summary(route_results) if route_results else {},
+            "detail_coverage_routes": len(detail_coverage),
             "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
         },
     }
@@ -1285,15 +1565,22 @@ def route_scan_result(route: dict[str, Any], args: argparse.Namespace, access_to
     details_fetched = 0
     if args.fetch_details:
         for item in items:
-            detail, identity, error = detail_for_search_item(item, args, access_token, extra_headers)
+            detail, identity, error, probe = detail_for_search_item(item, args, access_token, extra_headers)
+            detail_summary = detail_summary_for_probe(probe)
             if detail is None:
                 fallback = search_item_to_candidate(item, query, {})
                 fallback.setdefault("raw", {}).setdefault("warnings", []).append(f"详情追踪失败：{error or 'unknown error'}")
+                annotate_candidate_detail(fallback, detail_summary)
                 candidates.append(fallback)
-                detail_failures.append({"resource_id": identity.get("resource_id", ""), "catalog": identity.get("catalog", ""), "error": error or "unknown error"})
+                detail_failures.append(detail_failure_for_probe(probe, identity))
                 continue
             detail_candidates, seen, skipped = candidates_from_detail(detail, identity["catalog"], identity["sub_catalog"], {})
-            candidates.extend(detail_candidates or [search_item_to_candidate(item, query, {})])
+            if detail_candidates:
+                candidates.extend(annotate_candidate_detail(candidate, detail_summary) for candidate in detail_candidates)
+            else:
+                fallback = search_item_to_candidate(item, query, {})
+                fallback.setdefault("raw", {}).setdefault("warnings", []).append("详情已获取但未解析出文件项")
+                candidates.append(annotate_candidate_detail(fallback, detail_summary))
             details_fetched += 1
             detail_items_seen += seen
             detail_items_skipped += skipped
@@ -1349,6 +1636,7 @@ def run_scan_catalog(args: argparse.Namespace) -> int:
             "routes_scanned": len(route_results),
             "candidates": len(candidates),
             "search_items_seen": sum(int(item.get("search_items_seen") or 0) for item in route_results),
+            "route_scan_summary": scan_route_summary(route_results),
             "online": not bool(args.search_response_json),
             "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
         },
@@ -1422,6 +1710,7 @@ def run_scan_site(args: argparse.Namespace) -> int:
             "duplicates_removed": duplicates,
             "candidates": len(candidates),
             "search_items_seen": sum(int(item.get("search_items_seen") or 0) for item in route_results),
+            "route_scan_summary": scan_route_summary(route_results),
             "online": not bool(args.search_response_json),
             "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
         },
@@ -1842,23 +2131,25 @@ def run_search_resources(args: argparse.Namespace) -> int:
     detail_items_skipped = 0
     if args.fetch_details:
         for item in items:
-            detail, identity, error = detail_for_search_item(item, args, access_token, extra_headers)
+            detail, identity, error, probe = detail_for_search_item(item, args, access_token, extra_headers)
+            detail_summary = detail_summary_for_probe(probe)
             if detail is None:
                 fallback = search_item_to_candidate(item, query, filters)
                 fallback.setdefault("raw", {}).setdefault("warnings", []).append(f"详情追踪失败：{error or 'unknown error'}")
+                annotate_candidate_detail(fallback, detail_summary)
                 candidates.append(fallback)
-                detail_failures.append({"resource_id": identity.get("resource_id", ""), "catalog": identity.get("catalog", ""), "error": error or "unknown error"})
+                detail_failures.append(detail_failure_for_probe(probe, identity))
                 continue
             detail_candidates, seen, skipped = candidates_from_detail(detail, identity["catalog"], identity["sub_catalog"], filters)
             details_fetched += 1
             detail_items_seen += seen
             detail_items_skipped += skipped
             if detail_candidates:
-                candidates.extend(detail_candidates)
+                candidates.extend(annotate_candidate_detail(candidate, detail_summary) for candidate in detail_candidates)
             else:
                 fallback = search_item_to_candidate(item, query, filters)
                 fallback.setdefault("raw", {}).setdefault("warnings", []).append("详情已获取但未解析出文件项")
-                candidates.append(fallback)
+                candidates.append(annotate_candidate_detail(fallback, detail_summary))
     else:
         candidates = [search_item_to_candidate(item, query, filters) for item in items]
     result = {
@@ -1904,6 +2195,7 @@ def run_detail_probe(args: argparse.Namespace) -> int:
         endpoint = args.search_url or SEARCH_URLS[0]
     items = extract_search_items(data, args.limit)
     probes = [probe_detail_for_search_item(item, args, access_token, extra_headers) for item in items]
+    matrix = detail_probe_matrix(probes)
     status_counts = count_values([norm(item.get("detail_status")) for item in probes])
     access_policy_counts = count_values([norm(item.get("detail_access_policy")) for item in probes])
     result = {
@@ -1914,9 +2206,11 @@ def run_detail_probe(args: argparse.Namespace) -> int:
         "online_search": online,
         "search_endpoint": endpoint,
         "probes": probes,
+        "detail_matrix": matrix,
         "summary": {
             "search_items_seen": len(items),
             "probes": len(probes),
+            "matrix_rows": len(matrix),
             "status_counts": status_counts,
             "access_policy_counts": access_policy_counts,
             "details_accessible": sum(status_counts.get(key, 0) for key in ["ok_with_file_items", "ok_no_file_items"]),

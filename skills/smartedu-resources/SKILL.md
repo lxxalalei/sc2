@@ -169,6 +169,8 @@ python3 skills/smartedu-resources/scripts/smartedu_resources.py \
   -o smartedu-detail-probe.json
 ```
 
+`detail-probe` 会同时输出逐候选 `probes` 和按 `tab_code`、资源类型、栏目、`contentType` 聚合的 `detail_matrix`，用于判断每类候选是公开可取、需要授权、模板未知还是无文件项。
+
 列出 SmartEdu 站内教材候选：
 
 ```bash
@@ -237,9 +239,11 @@ learning-resource-intent
 
 如果调用 `search-resources --fetch-details`，本 skill 会尝试把搜索结果继续追踪到详情 JSON，并将详情中的 `ti_items` 展开为真实文件项候选。详情获取失败的搜索结果会保留为普通候选，并在 `detail_failures` 中记录失败原因。
 
+详情追踪会优先使用搜索项中显式给出的详情 JSON URL；如果搜索项没有顶层资源 ID，但详情页 URL 中含有 `contentId`、`catalogType`、`subCatalog` 或 `contentType`，会先从 URL 反推出详情身份字段，再补充默认 `s-file-ndrv2-details` 模板。
+
 后续详情展开优化按两类入口推进：
 
-- 详情探测入口：新增 `detail-probe`，从搜索响应或实时查询中提取候选字段，逐个尝试详情 JSON 模板，输出 HTTP 状态、详情模板命中、`ti_items` 数量和失败分类。该入口只做低频诊断和脱敏记录，不下载文件。
+- 详情探测入口：使用 `detail-probe` 从搜索响应或实时查询中提取候选字段，逐个尝试详情 JSON 模板，输出 HTTP 状态、详情模板命中、`ti_items` 数量和失败分类。该入口只做低频诊断和脱敏记录，不下载文件。
 - 浏览器会话入口：新增独立浏览器会话脚本，提供 `login`、`check`、`export-context`、`request` 四类命令。它只负责通过用户正常登录后的浏览器 state 获取授权上下文，供详情 JSON 和私有 NDR 探测使用；不得把 cookie、Authorization、MAC 或 `x-nd-auth` 写入候选、日志、文档或 skill 包。
 
 浏览器会话入口需要可选依赖 Playwright；未安装时不影响公开搜索、详情探测和离线回归。首次使用时先安装 Playwright，再由用户在弹出的浏览器里正常登录：
