@@ -285,11 +285,13 @@ class SmokeRunner:
         assert_true(selection.get("source_first") is True, "source-first flow 应标记先查已优化来源")
         assert_true(selection.get("used_web_fallback") is True, "已优化来源候选不足时应启用 web fallback")
         sources = [item.get("source") for item in selection.get("source_runs") or []]
+        assert_true("smartedu-resources:site-index" in sources, "source-first flow 应先加载 SmartEdu site-index 作为来源能力索引")
         assert_true("smartedu-resources" in sources, "source-first flow 应先调用 SmartEdu source")
         assert_true("web-learning-search" in sources, "source-first flow 候选不足时应调用 web-learning-search")
         assert_true("resource-source-discovery" in sources, "source-first flow 应接入来源发现")
         assert_true("web-resource-profiler" in sources, "source-first flow 应接入资源站画像")
         assert_true("generic-web-source" in sources, "source-first flow 应接入通用资源站抽取")
+        assert_true(bool(selection.get("work_files", {}).get("smartedu_site_index")), "source-first flow 应记录 SmartEdu site-index 工作文件")
         assert_true(bool(selection.get("work_files", {}).get("source_discovery")), "source-first flow 应记录来源发现工作文件")
         assert_true(bool(selection.get("work_files", {}).get("generic_candidates")), "source-first flow 应记录通用抽取候选文件")
         assert_true(selection.get("shown_count", 0) >= 1, "source-first flow 应生成用户可选候选")
@@ -387,6 +389,7 @@ class SmokeRunner:
         try:
             intent_json = self.work_dir / "flow-download-intent.json"
             search_results = self.work_dir / "flow-download-web-results.json"
+            smartedu_empty_search = self.work_dir / "flow-download-smartedu-empty.json"
             output_json = self.work_dir / "flow-download-selection.json"
             library_dir = self.work_dir / "flow-library"
             index_dir = self.work_dir / "flow-index"
@@ -422,6 +425,7 @@ class SmokeRunner:
                     ],
                 },
             )
+            write_json(smartedu_empty_search, {"total": 0, "items": []})
             self.command(
                 "learning-resource-flow-download-archive",
                 [
@@ -432,6 +436,8 @@ class SmokeRunner:
                     "--skip-local-search",
                     "--web-search-results-json",
                     str(search_results),
+                    "--smartedu-search-response-json",
+                    str(smartedu_empty_search),
                     "--min-source-candidates",
                     "3",
                     "--work-dir",
@@ -520,6 +526,8 @@ class SmokeRunner:
         site_profile_json = self.work_dir / "smartedu-site-profile.json"
         catalogs_json = self.work_dir / "smartedu-catalogs.json"
         route_map_json = self.work_dir / "smartedu-route-map.json"
+        site_index_json = self.work_dir / "smartedu-site-index.json"
+        site_index_with_scan_json = self.work_dir / "smartedu-site-index-with-scan.json"
         page_profile_json = self.work_dir / "smartedu-page-profile.json"
         catalog_scan_json = self.work_dir / "smartedu-catalog-scan.json"
         site_scan_json = self.work_dir / "smartedu-site-scan.json"
@@ -527,6 +535,7 @@ class SmokeRunner:
         textbook_work_dir = self.work_dir / "smartedu-textbook-work"
         search_candidates_json = self.work_dir / "smartedu-search-candidates.json"
         search_detail_candidates_json = self.work_dir / "smartedu-search-detail-candidates.json"
+        detail_probe_json = self.work_dir / "smartedu-detail-probe.json"
         search_detail_dir = self.work_dir / "smartedu-search-details"
         candidates_json = self.work_dir / "smartedu-resource-candidates.json"
         sample_library = self.skills / "smartedu-resources" / "references" / "sample-librarylist.json"
@@ -575,6 +584,25 @@ class SmokeRunner:
         assert_true(any(item.get("scan_strategy") == "internal_adapter" for item in routes), "路由图应包含教材内部适配分支")
         assert_true(any(item.get("scan_strategy") == "search_then_detail" for item in routes), "路由图应包含搜索到详情分支")
         assert_true(any(item.get("detail_url_templates") for item in routes), "路由图应包含详情 URL 模板")
+
+        self.command(
+            "smartedu-resources-site-index",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "site-index",
+                "--route-map-json",
+                str(route_map_json),
+                "-o",
+                str(site_index_json),
+            ],
+        )
+        site_index = load_json(site_index_json)
+        assert_true(site_index.get("site_index_schema") == "smartedu-site-index/v1", "SmartEdu 应输出全站索引")
+        assert_true(site_index.get("summary", {}).get("routes") == len(routes), "全站索引默认应覆盖全部 route")
+        assert_true(len(site_index.get("scan_plan") or []) == len(routes), "全站索引应为每条 route 输出扫描计划")
+        assert_true(site_index.get("coverage", {}).get("scan_strategies", {}).get("search_then_detail", 0) >= 1, "全站索引应统计搜索到详情 route")
+        assert_true(site_index.get("coverage", {}).get("scan_strategies", {}).get("internal_adapter", 0) >= 1, "全站索引应统计内部适配 route")
 
         self.command(
             "smartedu-resources-page-profile",
@@ -650,6 +678,24 @@ class SmokeRunner:
         assert_true(site_scan.get("summary", {}).get("raw_candidates") >= 2, "站点扫描应汇总原始候选")
         assert_true(site_scan.get("summary", {}).get("duplicates_removed") >= 1, "站点扫描应去重重复候选")
         assert_true(len(site_candidates) == 2, "站点扫描去重后应保留标准候选")
+
+        self.command(
+            "smartedu-resources-site-index-with-scan",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "site-index",
+                "--route-map-json",
+                str(route_map_json),
+                "--site-scan-json",
+                str(site_scan_json),
+                "-o",
+                str(site_index_with_scan_json),
+            ],
+        )
+        site_index_with_scan = load_json(site_index_with_scan_json)
+        assert_true(site_index_with_scan.get("summary", {}).get("candidates") == len(site_candidates), "全站索引应合并 scan-site 候选")
+        assert_true(site_index_with_scan.get("summary", {}).get("route_scan_summary", {}).get("routes_scanned") == 2, "全站索引应合并扫描摘要")
 
         self.command(
             "smartedu-resources-catalogs",
@@ -753,6 +799,32 @@ class SmokeRunner:
         assert_true(any(item.get("downloadable") is True for item in detail_candidates), "详情文件项候选应可进入后续下载判断")
 
         self.command(
+            "smartedu-resources-detail-probe",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "detail-probe",
+                "--query",
+                "三年级数学",
+                "--search-response-json",
+                str(sample_search),
+                "--detail-dir",
+                str(search_detail_dir),
+                "--offline-details-only",
+                "-o",
+                str(detail_probe_json),
+            ],
+        )
+        detail_probe = load_json(detail_probe_json)
+        probes = detail_probe.get("probes") or []
+        assert_true(detail_probe.get("detail_probe_schema") == "smartedu-detail-probe/v1", "SmartEdu 应输出详情探测结果")
+        assert_true(len(probes) == 2, "详情探测应覆盖搜索候选")
+        assert_true(detail_probe.get("summary", {}).get("status_counts", {}).get("ok_with_file_items") == 1, "详情探测应识别可展开详情")
+        assert_true(detail_probe.get("summary", {}).get("status_counts", {}).get("detail_not_found_in_dir") == 1, "详情探测应识别缺失详情")
+        assert_true(probes[0].get("detail_access_policy") == "public_detail", "命中详情的候选应标记公开详情可取")
+        assert_true(probes[0].get("file_item_count", 0) >= 3, "详情探测应统计 ti_items 数量")
+
+        self.command(
             "smartedu-resources-candidates",
             [
                 sys.executable,
@@ -774,6 +846,73 @@ class SmokeRunner:
         assert_true(all(item.get("source") == "smartedu-resources" for item in candidates), "SmartEdu 候选 source 应正确")
         assert_true(any(item.get("requires_auth") for item in candidates), "私有 NDR 资源应标记需要授权")
         assert_true(bool(candidates[0].get("raw", {}).get("smartedu_item")), "候选应保留原始 ti_item")
+
+    def test_smartedu_browser_session_offline(self) -> None:
+        state_json = self.work_dir / "smartedu-browser" / "state.json"
+        summary_json = self.work_dir / "smartedu-browser" / "session-summary.json"
+        export_json = self.work_dir / "smartedu-browser-export.json"
+        check_json = self.work_dir / "smartedu-browser-check.json"
+        write_json(
+            state_json,
+            {
+                "cookies": [
+                    {
+                        "name": "SESSION",
+                        "value": "secret-cookie-value",
+                        "domain": ".basic.smartedu.cn",
+                        "path": "/",
+                        "expires": 1812345678,
+                        "httpOnly": True,
+                        "secure": True,
+                        "sameSite": "Lax",
+                    }
+                ],
+                "origins": [
+                    {
+                        "origin": "https://basic.smartedu.cn",
+                        "localStorage": [{"name": "token", "value": "secret-local-token"}],
+                    }
+                ],
+            },
+        )
+        self.command(
+            "smartedu-browser-export-context",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_browser_session.py"),
+                "export-context",
+                "--state-json",
+                str(state_json),
+                "--summary-json",
+                str(summary_json),
+                "-o",
+                str(export_json),
+            ],
+        )
+        exported = load_json(export_json)
+        export_text = export_json.read_text(encoding="utf-8")
+        assert_true(exported.get("browser_session_schema") == "smartedu-browser-session/v1", "浏览器会话应输出脱敏摘要")
+        assert_true(exported.get("auth_context") is True, "浏览器 state 中有 cookie 时应标记授权上下文")
+        assert_true("basic.smartedu.cn" in exported.get("smartedu_cookie_domains", []), "浏览器会话应记录 SmartEdu cookie 域")
+        assert_true("secret-cookie-value" not in export_text and "secret-local-token" not in export_text, "浏览器会话摘要不得泄露 cookie 或 localStorage 原文")
+
+        self.command(
+            "smartedu-browser-check-offline",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_browser_session.py"),
+                "check",
+                "--offline",
+                "--state-json",
+                str(state_json),
+                "-o",
+                str(check_json),
+            ],
+        )
+        checked = load_json(check_json)
+        assert_true(checked.get("offline") is True, "离线 check 不应发起网络请求")
+        assert_true(checked.get("probes") == [], "离线 check 不应产生网络探针")
+        assert_true("secret-cookie-value" not in check_json.read_text(encoding="utf-8"), "离线 check 不应泄露 cookie 原文")
 
     def test_multiformat_analyzer(self) -> None:
         fixture_dir = self.work_dir / "analyzer-fixtures"
@@ -836,7 +975,23 @@ class SmokeRunner:
         selection_json = self.work_dir / "smartedu-selection.json"
         skipped_json = self.work_dir / "smartedu-download-skipped.json"
         probed_json = self.work_dir / "smartedu-download-probed.json"
+        browser_probed_json = self.work_dir / "smartedu-download-browser-probed.json"
         attempted_json = self.work_dir / "smartedu-download-attempted.json"
+        browser_state_json = self.work_dir / "smartedu-browser-downloader" / "state.json"
+        write_json(
+            browser_state_json,
+            {
+                "cookies": [
+                    {
+                        "name": "SESSION",
+                        "value": "secret-browser-cookie",
+                        "domain": ".basic.smartedu.cn",
+                        "path": "/",
+                    }
+                ],
+                "origins": [],
+            },
+        )
         write_json(
             selection_json,
             {
@@ -908,6 +1063,32 @@ class SmokeRunner:
         assert_true(len(probed["probed"][0].get("url_results") or []) == 2, "probe-only 应探测 url_candidates")
         assert_true(probed["probed"][0].get("accessible") is False, "不可达测试 URL 应标记不可访问")
         assert_true("test-marker-value" not in probed_json.read_text(encoding="utf-8"), "探测输出不应包含授权 header 原文")
+
+        self.command(
+            "smartedu-downloader-browser-probe-auth",
+            [
+                sys.executable,
+                self.script("learning-resource-downloader", "scripts", "download_selected.py"),
+                str(selection_json),
+                "--select",
+                "A",
+                "--allow-auth",
+                "--probe-only",
+                "--browser-state",
+                str(browser_state_json),
+                "--timeout",
+                "1",
+                "-o",
+                str(browser_probed_json),
+            ],
+            expect_success=False,
+        )
+        browser_probed = load_json(browser_probed_json)
+        browser_probe_results = browser_probed["probed"][0].get("url_results") or []
+        assert_true(browser_probed.get("auth_context") is True, "browser state 应作为授权上下文")
+        assert_true(browser_probed.get("browser_state_context") is True, "下载探测应标记 browser state 上下文")
+        assert_true(any(item.get("source") == "browser_state" for item in browser_probe_results), "probe-only 应尝试 browser state 探测")
+        assert_true("secret-browser-cookie" not in browser_probed_json.read_text(encoding="utf-8"), "browser state 探测输出不应泄露 cookie 原文")
 
         self.command(
             "smartedu-downloader-auth-attempt",
@@ -1076,6 +1257,7 @@ class SmokeRunner:
         self.test_resource_flow_download_archive()
         self.test_source_discovery_and_profiler()
         self.test_smartedu_resources()
+        self.test_smartedu_browser_session_offline()
         self.test_multiformat_analyzer()
         self.test_smartedu_downloader_auth_policy()
         self.test_library_chain()

@@ -103,6 +103,19 @@ python3 skills/learning-resource-downloader/scripts/download_selected.py \
 
 探测模式会按顺序检查 `source_url` 和 `candidate.raw.url_candidates`，输出每个 URL 的 HTTP 状态、内容类型和可访问性，不保存文件。
 
+如果 SmartEdu 私有文件需要浏览器登录态，可以在探测阶段传入浏览器 state：
+
+```bash
+python3 skills/learning-resource-downloader/scripts/download_selected.py \
+  selection.json \
+  --select A \
+  --allow-auth \
+  --probe-only \
+  --browser-state .learning-resource-work/smartedu-browser/state.json
+```
+
+`--browser-state` 当前只用于 `--probe-only`。正式下载仍需要明确的 token、cookie、header，或后续专门下载适配器确认签名和过期策略后再执行。
+
 ## 使用脚本
 
 ```bash
@@ -136,4 +149,5 @@ python3 skills/learning-resource-downloader/scripts/download_selected.py \
 - 最终资料库只能由后续 `learning-library-organizer` 写入。
 - token、cookie、manifest、日志不得进入最终资料库。
 - 下载 JSON 只能记录 `auth_context=true/false`，不得输出 token、cookie 或 header 原文。
+- 浏览器 state 只能作为授权上下文标记和探测输入，不得输出 cookie、localStorage、Authorization、MAC 或 `x-nd-auth` 原文。
 - 对大文件、可疑文件、下载器页面、需要登录资源，应跳过或失败记录，不做强行下载。

@@ -9,6 +9,7 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 import urllib.parse
 import urllib.request
@@ -103,6 +104,7 @@ def has_auth_context(args: argparse.Namespace) -> bool:
         args.access_token
         or args.cookie
         or args.header
+        or args.browser_state
         or os.environ.get("SMARTEDU_ACCESS_TOKEN")
         or os.environ.get("SMARTEDU_COOKIE")
         or os.environ.get("SMARTEDU_AUTHORIZATION")
@@ -184,12 +186,60 @@ def probe_url(url: str, timeout: int, headers: dict[str, str]) -> dict[str, Any]
     return {"url": str(url), "ok": False, "error": last_error}
 
 
-def probe_option(option: dict[str, Any], timeout: int, headers: dict[str, str]) -> dict[str, Any]:
+def browser_probe_url(url: str, timeout: int, browser_state: str) -> dict[str, Any]:
+    state_file = Path(browser_state)
+    if not state_file.exists():
+        return {"url": str(url), "ok": False, "source": "browser_state", "error": f"missing browser state: {state_file}"}
+    script = Path(__file__).resolve().parents[2] / "smartedu-resources" / "scripts" / "smartedu_browser_session.py"
+    command = [
+        sys.executable,
+        str(script),
+        "request",
+        "--state-json",
+        str(state_file),
+        "--url",
+        str(url),
+        "--header",
+        "Range: bytes=0-0",
+        "--timeout",
+        str(timeout),
+    ]
+    completed = subprocess.run(command, text=True, capture_output=True)
+    output = completed.stdout.strip()
+    if not output:
+        return {"url": str(url), "ok": False, "source": "browser_state", "error": completed.stderr.strip() or f"browser request failed: exit {completed.returncode}"}
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as exc:
+        return {"url": str(url), "ok": False, "source": "browser_state", "error": f"browser request output decode failed: {exc}"}
+    response = data.get("response") if isinstance(data, dict) else {}
+    if not isinstance(response, dict):
+        return {"url": str(url), "ok": False, "source": "browser_state", "error": "browser request response missing"}
+    return {
+        "url": str(url),
+        "ok": bool(response.get("ok")),
+        "source": "browser_state",
+        "status": response.get("status"),
+        "method": "GET",
+        "content_type": response.get("content_type"),
+        "content_length": int((response.get("headers") or {}).get("content-length") or 0) or None,
+        "error": response.get("error") or "",
+    }
+
+
+def probe_option(option: dict[str, Any], timeout: int, headers: dict[str, str], browser_state: str | None = None) -> dict[str, Any]:
     candidate = option.get("candidate") or {}
     urls = candidate_urls(option)
     if not urls:
         raise ValueError("缺少 source_url")
-    results = [probe_url(url, timeout, headers) for url in urls]
+    results: list[dict[str, Any]] = []
+    for url in urls:
+        result = probe_url(url, timeout, headers)
+        results.append(result)
+        if result.get("ok"):
+            continue
+        if browser_state:
+            results.append(browser_probe_url(url, timeout, browser_state))
     accessible = next((item for item in results if item.get("ok")), None)
     return {
         "option_id": option.get("option_id"),
@@ -198,6 +248,7 @@ def probe_option(option: dict[str, Any], timeout: int, headers: dict[str, str]) 
         "format": option.get("format") or candidate.get("format"),
         "resource_type": option.get("resource_type") or candidate.get("resource_type"),
         "accessible": bool(accessible),
+        "browser_state_context": bool(browser_state),
         "url_results": results,
         "candidate": candidate,
     }
@@ -311,8 +362,10 @@ def run(args: argparse.Namespace) -> int:
 
         try:
             if args.probe_only:
-                probed.append(probe_option(option, args.timeout, headers))
+                probed.append(probe_option(option, args.timeout, headers, browser_state=args.browser_state))
             else:
+                if args.browser_state:
+                    raise ValueError("--browser-state 当前只支持 --probe-only，不用于静默正式下载")
                 downloaded.append(download_option(option, downloads_dir, args.timeout, args.max_bytes, headers))
         except Exception as exc:
             failures.append(
@@ -343,6 +396,7 @@ def run(args: argparse.Namespace) -> int:
         "failures": failures,
         "work_dir": str(work_dir),
         "auth_context": auth_context,
+        "browser_state_context": bool(args.browser_state),
         "probe_only": bool(args.probe_only),
     }
     output = json.dumps(result, ensure_ascii=False, indent=2)
@@ -363,6 +417,7 @@ def main() -> int:
     parser.add_argument("--max-bytes", type=int, default=200 * 1024 * 1024, help="Maximum file size")
     parser.add_argument("--allow-auth", action="store_true", help="允许使用授权上下文下载 requires_auth 候选")
     parser.add_argument("--probe-only", action="store_true", help="只探测候选 URL 可访问性，不保存文件")
+    parser.add_argument("--browser-state", help="可选 Playwright storage state；只在 --probe-only 探测时使用")
     parser.add_argument("--access-token", help="SmartEdu access token; prefer SMARTEDU_ACCESS_TOKEN")
     parser.add_argument("--cookie", help="SmartEdu cookie; prefer SMARTEDU_COOKIE")
     parser.add_argument("--header", action="append", help="额外请求头，格式 'Name: value'；也可用 SMARTEDU_HEADERS")

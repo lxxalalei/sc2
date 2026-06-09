@@ -1,6 +1,6 @@
 ---
 name: learning-resource-flow
-description: 编排学习资源 Agent 的完整调用链。当用户要求查找、搜索、推荐、下载或整理学习资源时优先使用本 skill 作为总入口，尤其是“帮我找教材”“查找小学三年级数学教材”“下载人教版小学三年级数学上册”“找四则运算练习题”等请求。本 skill 负责决定是否先追问，并串联 intent、source、analyzer、ranker；不要只停留在单个搜索或下载 skill。
+description: 编排学习资源 Agent 的完整调用链。当用户要求查找、搜索、推荐、下载或整理学习资源时优先使用本 skill 作为总入口，例如练习题、课件、音频、视频、图文百科、绘本、教材等请求。本 skill 负责决定是否先追问，并串联 intent、source、analyzer、ranker；不要只停留在单个搜索或下载 skill。
 ---
 
 # 学习资源工作流编排
@@ -43,7 +43,7 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 用户请求
   -> learning-resource-intent        # 模型分析、解构、必要时追问
   -> local-library-search           # 若已有外部索引，先检索本地候选
-  -> source profiles                # 读取已优化站点 source 的能力画像
+  -> source profiles / site-index   # 读取已优化站点 source 的能力画像和站点索引
   -> optimized source skills        # 先查询已接入、已优化的站点来源
   -> candidate threshold check      # 候选太少或质量不足
   -> agent web search               # 再使用 agent 通用搜索能力获取网络搜索结果
@@ -60,9 +60,11 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
   -> 归档成功后进入 learning-library-index
 ```
 
-当前 SmartEdu 站点来源统一由 `smartedu-resources` 承接。早期教材脚本只作为该站点内部适配能力保留，不应作为外部独立来源参与路由。后续新增其他站点 source 后，都进入 `source profiles -> optimized source skills` 阶段，不需要改写全局意图逻辑。
+当前 SmartEdu 站点来源统一由 `smartedu-resources` 承接。后续新增其他站点 source 后，都进入 `source profiles -> optimized source skills` 阶段，不需要改写全局意图逻辑。
 
-如果用户直接说“下载人教版小学三年级数学上册”，也应先确认候选唯一性；候选唯一、质量高且来源明确时，才进入下载。
+SmartEdu 在 flow 中会先加载 `site-index`，把全站 route、扫描策略、tab code 和命令能力作为来源索引，再选择合适的搜索 tab 调用 `search-resources`。可用 `--smartedu-site-index-json` 复用已生成索引，或用 `--smartedu-route-map-json` / `--smartedu-library-list-json` 生成临时索引。
+
+如果用户直接要求下载某个资源，也应先确认候选唯一性；候选唯一、质量高且来源明确时，才进入下载。
 
 ## Source-first 执行规则
 
@@ -77,18 +79,13 @@ description: 编排学习资源 Agent 的完整调用链。当用户要求查找
 
 如果 `learning-resource-intent` 输出 `status=needs_clarification`，必须先追问用户，不要继续搜索。
 
-教材类常见追问：
-
-- 需要哪个学段和年级？
-- 需要哪个学科？
-- 需要哪个版本或出版社？
-- 需要上册、下册，还是先列出候选？
-
-主题类常见追问：
+常见追问：
 
 - 孩子几岁或几年级？
 - 核心学习主题是什么？
 - 需要练习题、视频、音频、图片，还是课件？
+- 需要打印、自学、亲子共读、课堂使用，还是听赏？
+- 如果用户明确提到课内同步资源，再追问版本、出版社或册次。
 
 ## 脚本化通用测试链路
 
@@ -110,6 +107,7 @@ python3 skills/learning-resource-flow/scripts/run_resource_flow.py \
 local-library-search
   -> 本地候选数量阈值判断
 smartedu-resources site-profile
+  -> smartedu-resources site-index
   -> smartedu-resources 候选查询
   -> 候选数量阈值判断
   -> web-learning-search fallback
@@ -147,9 +145,9 @@ learning-resource-downloader
 
 如果只想检查候选是否可访问，不保存文件，可加 `--probe-only`。正式下载后会先复查本地文件，避免把登录页、错误页或格式伪装文件直接当作正常资源归档。最终资料库仍只写入真实资源文件，下载结果、归档摘要和索引更新摘要保存在工作目录或外部索引中。
 
-## 脚本化教材兼容链路
+## 早期兼容链路
 
-为了在 OpenClaw 中测试当前已实现的官方教材来源链路，可使用：
+以下脚本只用于回归早期 SmartEdu 教材适配能力，不是通用学习资源默认入口。常规请求优先使用上面的 source-first 通用流程。
 
 ```bash
 python3 skills/learning-resource-flow/scripts/run_textbook_flow.py \

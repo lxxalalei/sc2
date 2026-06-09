@@ -101,6 +101,7 @@ SMARTEDU_ACCESS_TOKEN
 SMARTEDU_COOKIE
 SMARTEDU_AUTHORIZATION
 SMARTEDU_HEADERS
+SMARTEDU_SDP_APP_ID
 ```
 
 也可以使用命令行参数：
@@ -122,6 +123,8 @@ SMARTEDU_HEADERS
 ```
 
 不得把 token、cookie、authorization 或自定义 header 的原文写入候选、日志、资料库、索引或计划文档。
+
+新版搜索端点 `https://x-search.ykt.eduyun.cn/v1/resources/combine/search` 使用 `sdp-app-id` 标识应用，当前可在无 `Authorization: MAC ...` 的情况下低频返回搜索候选。`Authorization` 或 `x-nd-auth` 如需用于详情或私有文件下载，只能通过运行环境临时注入。
 
 ## 栏目画像输出
 
@@ -252,6 +255,140 @@ SMARTEDU_HEADERS
 ```
 
 `scan-site` 不下载资源；它只发现候选、去重、保留栏目追踪信息，并记录失败 route。下载仍交给 downloader 或专门下载团队。
+
+## 全站索引
+
+`site-index` 输出 `smartedu-site-index/v1`，用于沉淀 SmartEdu 全站 route 覆盖、扫描计划和可选候选摘要。它可以只基于 `route-map` 生成离线覆盖索引，也可以通过 `--site-scan-json` 合并 `scan-site` 的候选和失败记录。
+
+```json
+{
+  "site_index_schema": "smartedu-site-index/v1",
+  "source_skill": "smartedu-resources",
+  "source_name": "国家中小学智慧教育平台",
+  "site_url": "https://basic.smartedu.cn/",
+  "routes": [],
+  "scan_plan": [],
+  "coverage": {
+    "catalogs": {},
+    "sub_catalogs": {},
+    "types": {},
+    "resource_families": {},
+    "scan_strategies": {},
+    "search_tab_codes": {},
+    "supported_commands": {}
+  },
+  "candidates": [],
+  "failures": [],
+  "scan_summary": {},
+  "summary": {
+    "routes": 0,
+    "search_then_detail_routes": 0,
+    "internal_adapter_routes": 0,
+    "runtime_validation_routes": 0,
+    "candidates": 0,
+    "failures": 0,
+    "route_scan_summary": {},
+    "auth_context": false
+  }
+}
+```
+
+`scan_plan` 是给总控或后续批处理使用的轻量执行计划；`routes` 保留完整 route 原始上下文。`coverage` 用于判断当前 SmartEdu source 是否覆盖全站栏目、有哪些扫描策略、哪些 tab code 和命令能力仍需真实运行时验证。
+
+## 详情探测
+
+`detail-probe` 输出 `smartedu-detail-probe/v1`，用于在下载前判断搜索候选能否展开详情 JSON 和 `ti_items`。它不下载文件，只记录详情 URL 尝试、HTTP 状态、详情状态分类和脱敏错误。
+
+```json
+{
+  "detail_probe_schema": "smartedu-detail-probe/v1",
+  "source_skill": "smartedu-resources",
+  "query": "三年级数学",
+  "online_search": false,
+  "search_endpoint": "sample-search-response.json",
+  "probes": [
+    {
+      "resource_id": "qc-math-001",
+      "title": "小学数学 三年级 上册 分数的初步认识",
+      "catalog": "qualityCourse",
+      "sub_catalog": "course",
+      "content_type": "NDR_NationalLesson",
+      "detail_page": "https://basic.smartedu.cn/qualityCourse/detail?...",
+      "detail_endpoint_family": "s-file-ndrv2-details",
+      "detail_status": "ok_with_file_items",
+      "detail_access_policy": "public_detail",
+      "attempts": [],
+      "file_item_count": 3,
+      "parsed_candidate_count": 3,
+      "error": ""
+    }
+  ],
+  "summary": {
+    "search_items_seen": 1,
+    "probes": 1,
+    "status_counts": {"ok_with_file_items": 1},
+    "access_policy_counts": {"public_detail": 1},
+    "details_accessible": 1,
+    "requires_auth": 0,
+    "file_items": 3,
+    "parsed_candidates": 3,
+    "auth_context": false
+  }
+}
+```
+
+`detail_status` 当前分类：
+
+- `ok_with_file_items`：详情 JSON 可取且包含 `ti_items`。
+- `ok_no_file_items`：详情 JSON 可取，但没有文件项。
+- `requires_auth`：详情接口返回 403，需要账号态、cookie、Authorization 或浏览器会话。
+- `not_found`：详情接口返回 404，可能是模板不匹配或资源不存在。
+- `detail_not_found_in_dir`：离线模式下本地详情目录没有对应 JSON。
+- `missing_resource_id`：搜索候选缺少可用于详情接口的资源 ID。
+- `request_failed` / `invalid_json` / `unknown`：运行时请求或响应解析失败，需要进一步联调。
+
+## 浏览器会话摘要
+
+`smartedu_browser_session.py export-context` 和 `check` 输出 `smartedu-browser-session/v1`，用于把浏览器登录态能力以脱敏方式传给后续流程。原始 Playwright storage state 只能保存在工作目录，不进入 git、skill 包或候选 JSON。
+
+```json
+{
+  "browser_session_schema": "smartedu-browser-session/v1",
+  "state_file": ".learning-resource-work/smartedu-browser/state.json",
+  "state_file_exists": true,
+  "auth_context": true,
+  "has_cookie": true,
+  "cookie_count": 3,
+  "cookie_domains": ["basic.smartedu.cn"],
+  "smartedu_cookie_domains": ["basic.smartedu.cn"],
+  "local_storage_origins": ["https://basic.smartedu.cn"],
+  "capabilities": {
+    "can_use_browser_state": true,
+    "can_fetch_detail": null,
+    "can_probe_private_ndr": null
+  },
+  "secret_redaction": "不输出 cookie、Authorization、MAC、x-nd-auth 或浏览器 state 原文。"
+}
+```
+
+`smartedu_browser_session.py request` 输出 `smartedu-browser-request/v1`，只保留状态、内容类型、脱敏响应头和可选 JSON 摘要：
+
+```json
+{
+  "browser_request_schema": "smartedu-browser-request/v1",
+  "method": "GET",
+  "url": "https://s-file-1.ykt.cbern.com.cn/...",
+  "auth_context": true,
+  "response": {
+    "ok": true,
+    "status": 200,
+    "content_type": "application/json",
+    "headers": {"content-type": "application/json"},
+    "has_json": true,
+    "json_keys": ["id", "ti_items", "title"]
+  }
+}
+```
 
 教材候选仍使用 `learning-resource-candidate/v1`，对外来源保持：
 

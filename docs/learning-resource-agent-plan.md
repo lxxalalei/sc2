@@ -14,7 +14,7 @@
 6. 用户确认后，系统下载资源到本地。
 7. 系统识别文件内容、命名、分类并汇总进结构完整的资料库。
 
-学习主题不局限于课内教材或教辅，也包括四则运算、拼音识字、儿童百科、唐诗宋词、儿歌、绘本、科学启蒙、艺术启蒙、逻辑思维等。资源格式不限于 PDF，后续需要支持 DOC/DOCX、PPT/PPTX、图片、音频、视频、网页快照、压缩包等。
+学习主题覆盖课内和课外资源，包括四则运算、拼音识字、儿童百科、唐诗宋词、儿歌、绘本、科学启蒙、艺术启蒙、逻辑思维、课件、习题、试卷等。资源格式不限于 PDF，后续需要支持 DOC/DOCX、PPT/PPTX、图片、音频、视频、网页快照、压缩包等。
 
 ## 总体架构
 
@@ -41,7 +41,7 @@
 - 所有 skill 的 `SKILL.md`、示例、面向 agent 的操作说明和 UI 元数据以中文为基本语言。
 - 脚本内部可以保留必要的英文标识、命令参数和 JSON 字段名，便于程序处理和跨 skill 对接。
 - 最终资料库目录只放学习资源文件；索引、JSON、manifest、日志和缓存应放在工作目录或外部索引中。
-- 需求理解以“学习主题、孩子年龄/阶段、学习目标、资源形式”为中心；只有用户明确请求教材或课内同步资料时，才把教材版本、册次作为核心槽位。
+- 需求理解以“学习主题、孩子年龄/阶段、学习目标、资源形式和使用场景”为中心；不要把任何单一资源类型作为默认判断起点。
 - 资源来源不应和资源类型、学习主题、文件格式、年龄阶段或使用场景硬绑定；所有来源都应作为候选来源进入统一评分和选择流程。
 - 打包或较大改动后，优先运行 `python3 scripts/run_smoke_tests.py` 做离线回归验证。
 
@@ -54,9 +54,9 @@
 - 作为 OpenClaw 接入时的总控入口。
 - 判断学习资源请求应走哪些候选来源，来源选择保持类型无关、主题无关和格式无关。
 - 串联 source skill、analyzer、ranker，避免只执行搜索不执行评分。
-- 提供当前 SmartEdu 测试源的教材候选搜索、分析、评分、选择一键测试脚本。
+- 提供通用 source-first 脚本化测试链路，覆盖本地检索、已优化来源、web fallback、分析、评分和选择。
 
-状态：已创建第一版，当前 SmartEdu 测试源链路已跑通；正式教材请求应按多来源候选处理。
+状态：已创建第一版，通用 source-first 链路已跑通；教材、习题、课件、音视频、图文等请求都应按多来源候选处理。
 
 ### 1. `learning-resource-intent`
 
@@ -76,7 +76,7 @@
 - 学习目标：启蒙、预习、复习、练习、拓展、阅读、听赏、查阅等。
 - 资源类型：教材、课件、习题、试卷、视频、音频、图片、绘本、百科文章、游戏、教案等。
 - 格式偏好：PDF、DOC/DOCX、PPT/PPTX、图片、音频、视频、网页、压缩包等。
-- 教材附加槽位：版本/出版社、册次。仅在课内同步或教材需求中作为关键槽位。
+- 版本/出版社、册次等字段只在用户明确提出时抽取，不应驱动默认流程。
 
 状态：已创建第一版，已增加可执行任务契约。
 
@@ -343,6 +343,40 @@ Source skill 统一职责：
 
 ## 下一步计划
 
+### 当前优化清单：SmartEdu 详情展开 + 浏览器会话
+
+目标：把 SmartEdu 从“可公开搜索候选”推进到“可稳定展开详情文件项，并在需要授权时通过可控浏览器会话补齐上下文”。搜索、详情、下载三步要分离：公开搜索不依赖账号态；详情展开只负责拿详情 JSON 和 `ti_items`；私有文件下载由 downloader 使用明确授权上下文探测和下载。
+
+优先级清单：
+
+- [ ] P1：补齐 SmartEdu 详情探测矩阵。基于 `x-search` 返回项记录 `tab_code`、`resource_type`、`resource_type_name`、`catalog`、`subCatalog`、`contentType`、详情页 URL、资源 ID 字段和可尝试的详情 API 模板，输出每个栏目“公开可取 / 需要授权 / 模板未知 / 无文件项”的结论。
+- [ ] P1：新增低频详情探测入口。建议在 `smartedu-resources` 增加 `detail-probe` 子命令，输入搜索响应 JSON 或 `--query`，输出每个候选尝试过的详情 URL、HTTP 状态、是否拿到 JSON、是否包含 `ti_items`、失败原因；只保存脱敏诊断，不保存 token、cookie、MAC 或 `x-nd-auth`。
+- [ ] P1：增强 `search-resources --fetch-details`。先按搜索项真实字段推断详情模板，不再只依赖少量固定 URL；详情失败时把 `403/404/模板缺失/JSON 无 ti_items` 分类写入 `detail_failures`，并保留原搜索候选进入评分。
+- [ ] P1：把详情可访问性写回候选和站点索引。候选 `raw.smartedu_detail` 应包含 `detail_status`、`detail_access_policy`、`detail_endpoint_family` 和 `file_item_count`；`site-index` 聚合每类 route 的详情成功率和授权需求。
+- [x] P2：设计浏览器会话入口。新增独立脚本 `skills/smartedu-resources/scripts/smartedu_browser_session.py`，只负责登录态获取、会话检查、授权请求代理和脱敏导出，不直接做资源评分和资料库写入。
+- [x] P2：浏览器会话命令应至少包含 `login`、`check`、`export-context`、`request` 四个入口。`login` 让用户在浏览器中完成正常登录；`check` 验证当前会话能否访问搜索、详情和 NDR 文件探测；`export-context` 只导出可复用的脱敏会话摘要或本地 state 路径；`request` 用浏览器上下文低频请求指定 URL，用于详情 JSON 和 `x-nd-auth` 短时签名场景。
+- [x] P2：浏览器状态保存到工作目录。默认使用 `.learning-resource-work/smartedu-browser/state.json` 和 `.learning-resource-work/smartedu-browser/session-summary.json`；前者视为敏感运行态文件，不进 git、不进 skill 包，后者只能记录 `has_cookie=true`、过期时间、域名覆盖和最近检查结果。
+- [x] P2：安全边界固定。项目文件、日志、候选 JSON、计划文档不得落地原始账号、密码、cookie、MAC、Authorization、`x-nd-auth`；命令输出只允许记录 `auth_context=true/false`、HTTP 状态、资源域名和脱敏错误。
+- [ ] P3：把浏览器会话接入详情展开。`search-resources --fetch-details` 增加可选 `--browser-state` 或 `--browser-request` 参数；未提供时仍走公开 HTTP；提供后只对公开方式失败的详情做补充请求，默认低频、限量、可中断。
+- [ ] P3：把浏览器会话接入下载探测。downloader 在 `--allow-auth` 且提供浏览器会话时，优先做 `probe-only`，确认 `content-type`、大小、range 支持和过期策略，再允许正式下载；不要把浏览器会话作为静默默认行为。
+- [ ] P3：补齐离线回归。为 `detail-probe`、详情失败分类、浏览器 state 脱敏、`site-index` 详情覆盖聚合增加 fixture 和 smoke test；浏览器真实登录只做人工联调，不进入默认离线测试。
+
+SmartEdu 详情展开具体要做什么：
+
+1. 从 `x-search` 候选建立字段映射：资源 ID、栏目 tab、资源类型、详情页 URL、来源机构、文件格式和搜索 tags。
+2. 为每类候选生成详情尝试计划：优先使用已知详情 JSON 模板，其次从详情页 HTML/JS 线索推断接口，最后标记为 `template_unknown`。
+3. 对每个候选低频请求详情 JSON：记录状态码、响应类型、JSON 路径、是否存在 `ti_items`，并把 `ti_items` 转成标准候选。
+4. 对失败项保留搜索候选：不要因为详情 403 或模板未知丢掉候选；这些候选仍可进入 analyzer/ranker，但要降低可访问性或提示需要授权。
+5. 把结果沉淀到两个层面：单个候选记录详情状态，全站 `site-index` 记录 route 级详情覆盖率。
+
+浏览器会话方案入口具体要做什么：
+
+1. `login`：启动浏览器，用户手动登录 SmartEdu，脚本保存 Playwright storage state 到工作目录。
+2. `check`：用已保存 state 请求一组固定探针，包括 `x-search`、一个详情 JSON、一个 NDR 文件 HEAD/range 探测，输出脱敏可用性摘要。
+3. `request`：给详情展开或下载探测提供受控请求能力，输入 URL、method、headers 白名单和限速参数，输出状态、响应头摘要、JSON 或文件探测结果。
+4. `export-context`：不导出原始 cookie，只告诉上游流程 state 文件路径、可用域、最近验证时间和授权能力标签，例如 `can_fetch_detail=true`、`can_probe_private_ndr=true`。
+5. `flow` 集成：总控只传递 `--browser-state` 路径和能力摘要；真正访问由 SmartEdu source 或 downloader 执行，避免 intent/ranker/selector 接触敏感信息。
+
 ### P0：补齐基础契约
 
 - [x] 为 `smartedu-textbooks` 增加标准候选资源输出格式。
@@ -524,3 +558,19 @@ Source skill 统一职责：
 - 增强 `learning-resource-analyzer` 的通用资源证据：轻量提取 PDF 页数和文本样本，识别声明格式与实际内容不一致的伪装资源，标记登录/权限/会员页风险，音视频支持同名 `.srt/.vtt/.lrc/.txt` 侧车文本。
 - 增强 `learning-resource-ranker` 对内容证据和用户偏好的消费：评分中加入 `content_evidence` 和 `preference_fit`，对缺少内容证据、登录限制、格式伪装、可打印/听赏/视频场景做更明确的加权或降权。
 - 扩展离线 smoke test：新增本地资料库优先 flow 用例、基于本机 HTTP 服务的 `flow --select` 下载归档索引用例，以及声明为 PDF 的 HTML 登录页识别断言。
+
+### 2026-06-09
+
+- 收敛通用化提示词：将项目入口、主计划、`learning-resource-flow`、`learning-resource-intent` 和 flow 用例中的默认叙述从教材验证链路调整为通用学习资源链路。
+- 明确教材只是资源类型之一，不作为需求理解、来源选择或追问策略的默认判断起点；版本、出版社、册次等字段只在用户明确提供或精确资源定位需要时抽取。
+- 将通用入口示例从教材请求改为练习题、儿童百科、唐诗宋词启蒙音频等场景，保留 `smartedu-textbooks` 为 SmartEdu 站点内部早期兼容适配资产。
+- 推进 SmartEdu 全站 source 支持：新增 `site-index` 命令，基于 route-map 输出全站 route 覆盖、扫描计划、scan strategy/tab code/命令能力统计，并可合并 `scan-site` 候选与失败摘要。
+- 为 `scan-catalog` 和 `scan-site` 增加 `--all-routes` / `--route-limit 0` 全 route 选择语义，避免站点级扫描默认只能覆盖少量 route。
+- 扩展离线 smoke test，验证 SmartEdu 全站索引默认覆盖全部 route，并可合并站点扫描候选和 route 扫描摘要。
+- 将 SmartEdu `site-index` 接入 `learning-resource-flow`：flow 先读取或生成站点索引，把它作为 source registry 工作文件记录，再从 route 覆盖中选择搜索 tab 调用 `search-resources`。
+- 增加 flow 参数 `--smartedu-site-index-json`、`--smartedu-route-map-json`、`--smartedu-library-list-json`、`--smartedu-route-limit`、`--smartedu-all-routes` 和 `--smartedu-tab-limit`，支持复用真实全站索引或离线 fixture。
+- 真实公开联调 SmartEdu route 覆盖：可联网读取官方 `librarylist.json`，当前得到 147 个栏目项、去重后 133 条 route，其中 132 条 `search_then_detail`、1 条内部适配分支；未登录调用搜索网关仍返回 403，继续真实扫描需要 cookie、Authorization 或浏览器上下文。
+- 根据 HAR 重新定位 SmartEdu 新版搜索接口 `https://x-search.ykt.eduyun.cn/v1/resources/combine/search`；低频真实联调确认该端点可在无 `Authorization: MAC` 时通过 `sdp-app-id` 返回搜索候选。
+- 将 `smartedu-resources` 默认搜索端点切换为 `x-search`，请求体采用 `identity=家长`、`identity_code=GUARDIAN`、全站 tab_codes、`combine_intentions=[]` 和 `combine_resources=[]`；旧 `resource-gateway` 端点保留为 fallback。
+- 增强 SmartEdu 搜索候选归一化：清理搜索高亮 HTML，从 `tags` 和 `extra.providers` 中抽取学段、年级、学科、版本、册次和 provider，并过滤 UUID 形式的非文件格式字段。
+- 真实低频详情追踪验证：`search-resources --fetch-details` 可完成搜索，但 `prepareLesson` 详情 JSON 在未授权状态下仍返回 403；当前无账号态可稳定完成候选发现，详情展开和私有文件下载仍需浏览器会话、`x-nd-auth` 或其他授权上下文。

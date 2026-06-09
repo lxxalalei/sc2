@@ -22,6 +22,7 @@ from urllib.request import Request, urlopen
 
 LIBRARY_LIST_URL = "https://api.ykt.cbern.com.cn/zxx/api_static/data/6_6_6/librarylist.json"
 SEARCH_URLS = (
+    "https://x-search.ykt.eduyun.cn/v1/resources/combine/search",
     "https://resource-gateway.ykt.eduyun.cn/resources/combine/search",
     "https://resource-gateway.ykt.eduyun.cn/resources/aggregate",
 )
@@ -29,11 +30,13 @@ DETAIL_URLS = (
     "https://s-file-1.ykt.cbern.com.cn/zxx/ndrv2/resources/{catalog}/details/{id}.json",
     "https://s-file-2.ykt.cbern.com.cn/zxx/ndrv2/resources/{catalog}/details/{id}.json",
 )
+DETAIL_ENDPOINT_FAMILY = "s-file-ndrv2-details"
 DETAIL_PAGE = (
     "https://basic.smartedu.cn/{catalog}/detail?"
     "contentType={content_type}&contentId={id}&catalogType={catalog}&subCatalog={sub_catalog}"
 )
 PRIVATE_HOST = "https://r1-ndr-private.ykt.cbern.com.cn"
+DEFAULT_SDP_APP_ID = "e5649925-441d-4a53-b525-51a2f1c4e0a8"
 PUBLIC_HOSTS = (
     "https://r1-ndr.ykt.cbern.com.cn",
     "https://r2-ndr.ykt.cbern.com.cn",
@@ -49,7 +52,44 @@ TAG_DIMENSIONS = {
 }
 DEFAULT_RESOURCE_TYPES = ["教材", "课程", "课件", "习题", "试卷", "视频", "音频", "图片", "文档", "实验", "专题", "家庭教育", "德育", "课后服务"]
 DEFAULT_FORMATS = ["pdf", "doc", "docx", "ppt", "pptx", "jpg", "png", "mp3", "mp4", "m3u8", "zip", "网页"]
-DEFAULT_TAB_CODES = ["qualityCourse", "prepareLesson", "questions", "examinationPapers", "teachingKnMicroLesson"]
+DEFAULT_TAB_CODES = [
+    "sedu",
+    "qualityCourse",
+    "prepareLesson",
+    "lecturer",
+    "questions",
+    "examinationPapers",
+    "teachingKnMicroLesson",
+    "listening",
+    "singing",
+    "sport",
+    "art",
+    "labourEdu",
+    "schoolService",
+    "childhoodEdu",
+    "childhood_policy",
+    "childhood_typexp",
+    "childhood_care",
+    "childhood_activities",
+    "specialEdu",
+    "family",
+    "tchMaterial",
+    "AIEducation",
+    "technologyEdu",
+    "areaSite",
+    "studio-inst",
+    "studio-inst-article",
+    "studio-inst-res",
+    "studio-inst-teachres",
+    "studio-inst-spres",
+    "studio-inst-exrc",
+    "topic",
+    "live",
+    "school-space",
+    "school-space-article",
+    "school-space-res",
+    "questions_ai_answer",
+]
 RESOURCE_EXTENSIONS = {"pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "jpg", "jpeg", "png", "webp", "gif", "mp3", "wav", "m4a", "mp4", "mov", "m3u8", "zip", "rar", "7z"}
 SMARTEDU_API_TERMS = ["api", "resources", "resource", "librarylist", "details", "search", "aggregate", "combine", "ndrv2", "catalog", "course", "lesson", "content"]
 CATALOG_TAB_HINTS = {
@@ -67,6 +107,12 @@ CATALOG_TAB_HINTS = {
 
 def norm(value: Any) -> str:
     return str(value or "").strip()
+
+
+def clean_html_text(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", "", text)
+    return norm(re.sub(r"\s+", " ", text))
 
 
 def load_json(path: str) -> Any:
@@ -102,10 +148,13 @@ def parse_extra_headers(values: list[str] | None = None) -> dict[str, str]:
 
 
 def build_headers(access_token: str | None = None, cookie: str | None = None, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
+    extra_headers = extra_headers or {}
     headers = {
         "User-Agent": "Mozilla/5.0 smartedu-resources/0.1",
         "Accept": "application/json,text/plain,*/*",
+        "Origin": "https://basic.smartedu.cn",
         "Referer": "https://basic.smartedu.cn/",
+        "sdp-app-id": os.environ.get("SMARTEDU_SDP_APP_ID", DEFAULT_SDP_APP_ID),
     }
     authorization = os.environ.get("SMARTEDU_AUTHORIZATION")
     cookie = cookie or os.environ.get("SMARTEDU_COOKIE")
@@ -116,7 +165,7 @@ def build_headers(access_token: str | None = None, cookie: str | None = None, ex
         headers["accessToken"] = access_token
     if cookie:
         headers["Cookie"] = cookie
-    headers.update(extra_headers or {})
+    headers.update(extra_headers)
     headers["Content-Type"] = "application/json;charset=UTF-8"
     return headers
 
@@ -129,6 +178,10 @@ def has_auth_context(access_token: str | None, cookie: str | None, extra_headers
         or os.environ.get("SMARTEDU_COOKIE")
         or os.environ.get("SMARTEDU_AUTHORIZATION")
     )
+
+
+def has_runtime_auth_context(access_token: str | None, cookie: str | None, extra_headers: dict[str, str], args: argparse.Namespace) -> bool:
+    return has_auth_context(access_token, cookie, extra_headers) or bool(getattr(args, "browser_state", None))
 
 
 def request_json(
@@ -154,6 +207,70 @@ def request_json(
             if attempt < retries:
                 time.sleep(0.4 * (attempt + 1))
     raise RuntimeError(f"fetch failed: {url}: {last_error}")
+
+
+def request_json_status(
+    url: str,
+    access_token: str | None = None,
+    timeout: int = 20,
+    payload: Any = None,
+    cookie: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[dict[str, Any] | None, int | None, str, str]:
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(url, data=data, headers=build_headers(access_token, cookie=cookie, extra_headers=extra_headers))
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            content_type = response.headers.get("Content-Type", "")
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError as exc:
+                return None, response.status, content_type, f"json decode failed: {exc}"
+            return parsed if isinstance(parsed, dict) else {"data": parsed}, response.status, content_type, ""
+    except HTTPError as exc:
+        return None, exc.code, exc.headers.get("Content-Type", ""), str(exc)
+    except (URLError, TimeoutError) as exc:
+        return None, None, "", str(exc)
+
+
+def browser_request_json_status(url: str, browser_state: str, timeout: int = 20) -> tuple[dict[str, Any] | None, int | None, str, str]:
+    if not browser_state:
+        return None, None, "", "missing browser state"
+    state_file = Path(browser_state)
+    if not state_file.exists():
+        return None, None, "", f"missing browser state: {state_file}"
+    script = Path(__file__).with_name("smartedu_browser_session.py")
+    command = [
+        sys.executable,
+        str(script),
+        "request",
+        "--state-json",
+        str(state_file),
+        "--url",
+        url,
+        "--include-json",
+        "--timeout",
+        str(timeout),
+    ]
+    completed = subprocess.run(command, text=True, capture_output=True)
+    output = completed.stdout.strip()
+    if not output:
+        return None, None, "", completed.stderr.strip() or f"browser request failed: exit {completed.returncode}"
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as exc:
+        return None, None, "", f"browser request output decode failed: {exc}"
+    response = data.get("response") if isinstance(data, dict) else {}
+    if not isinstance(response, dict):
+        return None, None, "", "browser request response missing"
+    detail = response.get("json") if isinstance(response.get("json"), dict) else None
+    status = response.get("status") if isinstance(response.get("status"), int) else None
+    content_type = norm(response.get("content_type"))
+    error = norm(response.get("error")) or (completed.stderr.strip() if completed.returncode not in {0, 1} else "")
+    return detail, status, content_type, error
 
 
 def request_text(
@@ -332,17 +449,13 @@ def search_payload(args: argparse.Namespace, filters: dict[str, Any]) -> dict[st
         "identity_code": args.identity_code,
         "keyword": query,
         "tab_codes": parse_tab_codes(args.tab_code),
-        "resource_search_type": args.search_type,
         "cross_tenant": args.cross_tenant,
         "duplicate_filter": True,
         "search_order": {"field": args.order_field, "direction": args.order_direction},
-        "search_fields": [],
         "offset": args.offset,
         "limit": args.limit,
-        "combine_intentions": True,
-        "combine_resources": True,
-        "tags": [],
-        "origin": args.origin,
+        "combine_intentions": [],
+        "combine_resources": [],
     }
 
 
@@ -390,11 +503,35 @@ def extract_search_items(data: Any, limit: int) -> list[dict[str, Any]]:
 
 
 def infer_format_from_item(item: dict[str, Any], url: str) -> str:
-    fmt = norm(first_value(item, ["format", "file_format", "fileFormat", "resource_format", "resourceFormat", "ti_format"])).lower()
+    extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+    fmt = norm(
+        first_value(item, ["format", "file_format", "fileFormat", "resource_format", "resourceFormat", "ti_format"])
+        or extra.get("format")
+    ).lower()
     if "/" in fmt:
         fmt = fmt.rsplit("/", 1)[-1]
     suffix = Path(urllib.parse.urlparse(url).path).suffix.lower().lstrip(".")
-    return ("jpg" if fmt == "jpeg" else fmt) or suffix or "网页"
+    title_suffix = Path(clean_html_text(first_value(item, ["title", "name", "content_name", "contentName", "resource_name", "resourceName", "global_title"]))).suffix.lower().lstrip(".")
+    detected = ("jpg" if fmt == "jpeg" else fmt) or suffix or title_suffix
+    return detected if detected in RESOURCE_EXTENSIONS else "网页"
+
+
+def search_tags_by_dimension(item: dict[str, Any]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for tag in item.get("tags") or []:
+        if not isinstance(tag, dict):
+            continue
+        dim = TAG_DIMENSIONS.get(str(tag.get("dimension_id") or tag.get("tag_dimension_id")))
+        if dim and dim not in values:
+            values[dim] = clean_html_text(tag.get("title") or tag.get("tag_name"))
+    return values
+
+
+def search_provider_name(item: dict[str, Any]) -> str:
+    extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+    providers = extra.get("providers") if isinstance(extra.get("providers"), list) else []
+    names = [clean_html_text(row.get("name")) for row in providers if isinstance(row, dict) and clean_html_text(row.get("name"))]
+    return "/".join(names) if names else ""
 
 
 def detail_page_from_search_item(item: dict[str, Any]) -> str:
@@ -416,26 +553,27 @@ def detail_page_from_search_item(item: dict[str, Any]) -> str:
 def search_item_to_candidate(item: dict[str, Any], query: str, filters: dict[str, Any]) -> dict[str, Any]:
     source_url = detail_page_from_search_item(item)
     fmt = infer_format_from_item(item, source_url)
-    title = norm(first_value(item, ["title", "name", "content_name", "contentName", "resource_name", "resourceName", "global_title"])) or "SmartEdu 资源"
+    title = clean_html_text(first_value(item, ["title", "name", "content_name", "contentName", "resource_name", "resourceName", "global_title"])) or "SmartEdu 资源"
     catalog = norm(first_value(item, ["catalog", "catalog_type", "catalogType", "tab_code", "tabCode", "channel_code", "channelCode"]))
     resource_id = norm(first_value(item, ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"])) or stable_id(title + source_url)
+    tag_values = search_tags_by_dimension(item)
     candidate = {
         "source": "smartedu-resources",
         "source_name": "国家中小学智慧教育平台",
         "source_url": source_url,
         "resource_id": f"smartedu-search:{resource_id}",
         "title": title,
-        "description": norm(first_value(item, ["description", "summary", "intro", "content", "snippet", "global_description"])),
+        "description": clean_html_text(first_value(item, ["description", "summary", "intro", "content", "snippet", "global_description"])),
         "resource_type": norm(first_value(item, ["resource_type_name", "resourceTypeName", "content_type_name", "contentTypeName"])) or resource_type_for(fmt, {}, item),
         "format": fmt,
-        "stage": norm(first_value(item, ["stage", "phase", "school_section"])) or filters.get("stage"),
-        "grade": norm(first_value(item, ["grade", "grade_name", "gradeName"])) or filters.get("grade"),
-        "subject": norm(first_value(item, ["subject", "subject_name", "subjectName"])) or filters.get("subject"),
-        "learning_domain": norm(first_value(item, ["subject", "subject_name", "subjectName"])) or filters.get("learning_domain") or filters.get("subject"),
-        "version": norm(first_value(item, ["version", "version_name", "versionName"])) or filters.get("version"),
-        "volume": norm(first_value(item, ["volume", "book", "book_name", "bookName"])) or filters.get("volume"),
+        "stage": norm(first_value(item, ["stage", "phase", "school_section"])) or tag_values.get("stage") or filters.get("stage"),
+        "grade": norm(first_value(item, ["grade", "grade_name", "gradeName"])) or tag_values.get("grade") or filters.get("grade"),
+        "subject": norm(first_value(item, ["subject", "subject_name", "subjectName"])) or tag_values.get("subject") or filters.get("subject"),
+        "learning_domain": norm(first_value(item, ["subject", "subject_name", "subjectName"])) or tag_values.get("subject") or filters.get("learning_domain") or filters.get("subject"),
+        "version": norm(first_value(item, ["version", "version_name", "versionName"])) or tag_values.get("version") or filters.get("version"),
+        "volume": norm(first_value(item, ["volume", "book", "book_name", "bookName"])) or tag_values.get("volume") or filters.get("volume"),
         "topic": filters.get("core_topic") or query,
-        "provider": norm(first_value(item, ["provider", "provider_name", "providerName", "source_name", "sourceName"])) or "国家中小学智慧教育平台",
+        "provider": norm(first_value(item, ["provider", "provider_name", "providerName", "source_name", "sourceName"])) or search_provider_name(item) or "国家中小学智慧教育平台",
         "official": True,
         "downloadable": False,
         "requires_auth": False,
@@ -456,7 +594,213 @@ def search_item_identity(item: dict[str, Any]) -> dict[str, str]:
         "resource_id": norm(first_value(item, ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"])),
         "catalog": norm(first_value(item, ["catalog", "catalog_type", "catalogType", "tab_code", "tabCode", "channel_code", "channelCode"])) or "syncClassroom",
         "sub_catalog": norm(first_value(item, ["sub_catalog", "subCatalog", "sub_catalog_code", "subCatalogCode"])),
+        "content_type": norm(first_value(item, ["content_type", "contentType", "resource_type", "resourceType", "resource_type_code", "resourceTypeCode"])),
     }
+
+
+def detail_urls_for_identity(identity: dict[str, str]) -> list[dict[str, str]]:
+    resource_id = identity.get("resource_id") or ""
+    catalog = identity.get("catalog") or "syncClassroom"
+    if not resource_id:
+        return []
+    urls: list[dict[str, str]] = []
+    for index, template in enumerate(DETAIL_URLS, 1):
+        url = template.format(catalog=urllib.parse.quote(catalog), id=urllib.parse.quote(resource_id))
+        urls.append(
+            {
+                "url": url,
+                "endpoint_family": DETAIL_ENDPOINT_FAMILY,
+                "template_index": str(index),
+            }
+        )
+    return urls
+
+
+def classify_detail_probe(
+    status: int | None,
+    detail: dict[str, Any] | None,
+    error: str,
+    offline: bool = False,
+) -> str:
+    if offline and detail is None:
+        return "detail_not_found_in_dir"
+    if detail is not None:
+        items = detail.get("ti_items")
+        if isinstance(items, list) and items:
+            return "ok_with_file_items"
+        return "ok_no_file_items"
+    if status == 403:
+        return "requires_auth"
+    if status == 404:
+        return "not_found"
+    if status is None:
+        return "request_failed"
+    if error:
+        return "invalid_json" if "json decode failed" in error else "request_failed"
+    return "unknown"
+
+
+def detail_access_policy(status: str, via_browser: bool = False) -> str:
+    if status in {"ok_with_file_items", "ok_no_file_items"}:
+        if via_browser:
+            return "browser_session_detail"
+        return "public_detail"
+    if status == "requires_auth":
+        return "requires_auth_context"
+    if status in {"detail_not_found_in_dir", "not_found"}:
+        return "unavailable_or_template_unknown"
+    return "runtime_validation_needed"
+
+
+def probe_detail_for_search_item(
+    item: dict[str, Any],
+    args: argparse.Namespace,
+    access_token: str | None,
+    extra_headers: dict[str, str],
+) -> dict[str, Any]:
+    identity = search_item_identity(item)
+    title = clean_html_text(first_value(item, ["title", "name", "content_name", "contentName", "resource_name", "resourceName", "global_title"]))
+    result: dict[str, Any] = {
+        "resource_id": identity.get("resource_id") or "",
+        "title": title,
+        "catalog": identity.get("catalog") or "",
+        "sub_catalog": identity.get("sub_catalog") or "",
+        "content_type": identity.get("content_type") or "",
+        "detail_page": detail_page_from_search_item(item),
+        "detail_endpoint_family": DETAIL_ENDPOINT_FAMILY,
+        "detail_status": "missing_resource_id" if not identity.get("resource_id") else "not_attempted",
+        "detail_access_policy": "template_unknown" if not identity.get("resource_id") else "runtime_validation_needed",
+        "attempts": [],
+        "file_item_count": 0,
+        "parsed_candidate_count": 0,
+        "error": "",
+    }
+    if not identity.get("resource_id"):
+        result["error"] = "missing resource id"
+        return result
+
+    cached = load_detail_from_dir(args.detail_dir, identity)
+    if cached is not None:
+        candidates, seen, skipped = candidates_from_detail(cached, identity["catalog"], identity["sub_catalog"], {})
+        status = classify_detail_probe(200, cached, "")
+        result.update(
+            {
+                "detail_status": status,
+                "detail_access_policy": detail_access_policy(status),
+                "attempts": [
+                    {
+                        "source": "detail_dir",
+                        "status": 200,
+                        "content_type": "application/json",
+                        "has_json": True,
+                        "has_ti_items": isinstance(cached.get("ti_items"), list),
+                        "ti_items": seen,
+                        "skipped_items": skipped,
+                        "error": "",
+                    }
+                ],
+                "file_item_count": seen,
+                "parsed_candidate_count": len(candidates),
+            }
+        )
+        return result
+    if args.offline_details_only:
+        status = classify_detail_probe(None, None, "", offline=True)
+        result.update({"detail_status": status, "detail_access_policy": detail_access_policy(status), "error": "detail not found in detail dir"})
+        return result
+
+    for attempt in detail_urls_for_identity(identity):
+        detail, status_code, content_type, error = request_json_status(
+            attempt["url"],
+            access_token=access_token,
+            timeout=args.timeout,
+            cookie=args.cookie,
+            extra_headers=extra_headers,
+        )
+        candidates: list[dict[str, Any]] = []
+        seen = 0
+        skipped = 0
+        if detail is not None:
+            candidates, seen, skipped = candidates_from_detail(detail, identity["catalog"], identity["sub_catalog"], {})
+        classified = classify_detail_probe(status_code, detail, error)
+        result["attempts"].append(
+            {
+                "url": attempt["url"],
+                "endpoint_family": attempt["endpoint_family"],
+                "template_index": attempt["template_index"],
+                "status": status_code,
+                "content_type": content_type,
+                "has_json": detail is not None,
+                "has_ti_items": bool(detail is not None and isinstance(detail.get("ti_items"), list)),
+                "ti_items": seen,
+                "skipped_items": skipped,
+                "error": error,
+                "classified_status": classified,
+            }
+        )
+        if detail is not None:
+            result.update(
+                {
+                    "detail_status": classified,
+                    "detail_access_policy": detail_access_policy(classified),
+                    "file_item_count": seen,
+                    "parsed_candidate_count": len(candidates),
+                    "error": error,
+                }
+            )
+            break
+        if getattr(args, "browser_state", None) and classified in {"requires_auth", "request_failed"}:
+            browser_detail, browser_status, browser_content_type, browser_error = browser_request_json_status(attempt["url"], args.browser_state, timeout=args.timeout)
+            browser_candidates: list[dict[str, Any]] = []
+            browser_seen = 0
+            browser_skipped = 0
+            if browser_detail is not None:
+                browser_candidates, browser_seen, browser_skipped = candidates_from_detail(browser_detail, identity["catalog"], identity["sub_catalog"], {})
+            browser_classified = classify_detail_probe(browser_status, browser_detail, browser_error)
+            result["attempts"].append(
+                {
+                    "source": "browser_state",
+                    "url": attempt["url"],
+                    "endpoint_family": attempt["endpoint_family"],
+                    "template_index": attempt["template_index"],
+                    "status": browser_status,
+                    "content_type": browser_content_type,
+                    "has_json": browser_detail is not None,
+                    "has_ti_items": bool(browser_detail is not None and isinstance(browser_detail.get("ti_items"), list)),
+                    "ti_items": browser_seen,
+                    "skipped_items": browser_skipped,
+                    "error": browser_error,
+                    "classified_status": browser_classified,
+                }
+            )
+            if browser_detail is not None:
+                result.update(
+                    {
+                        "detail_status": browser_classified,
+                        "detail_access_policy": detail_access_policy(browser_classified, via_browser=True),
+                        "file_item_count": browser_seen,
+                        "parsed_candidate_count": len(browser_candidates),
+                        "error": browser_error,
+                    }
+                )
+                break
+        if status_code in {403, 404}:
+            result.update(
+                {
+                    "detail_status": classified,
+                    "detail_access_policy": detail_access_policy(classified),
+                    "file_item_count": seen,
+                    "parsed_candidate_count": len(candidates),
+                    "error": error,
+                }
+            )
+            if status_code == 404:
+                break
+    if result["detail_status"] == "not_attempted" and result["attempts"]:
+        last = result["attempts"][-1]
+        status = classify_detail_probe(last.get("status"), None, last.get("error") or "")
+        result.update({"detail_status": status, "detail_access_policy": detail_access_policy(status), "error": last.get("error") or ""})
+    return result
 
 
 def load_detail_from_dir(detail_dir: str | None, identity: dict[str, str]) -> dict[str, Any] | None:
@@ -493,7 +837,19 @@ def detail_for_search_item(
     if args.offline_details_only:
         return None, identity, "detail not found in detail dir"
     try:
-        return fetch_detail(identity["resource_id"], identity["catalog"], access_token, cookie=args.cookie, extra_headers=extra_headers), identity, None
+        return (
+            fetch_detail(
+                identity["resource_id"],
+                identity["catalog"],
+                access_token,
+                cookie=args.cookie,
+                extra_headers=extra_headers,
+                browser_state=getattr(args, "browser_state", None),
+                timeout=getattr(args, "timeout", 20),
+            ),
+            identity,
+            None,
+        )
     except Exception as exc:
         return None, identity, str(exc)
 
@@ -733,7 +1089,7 @@ def run_route_map(args: argparse.Namespace) -> int:
             "internal_adapter_routes": sum(1 for item in routes if item.get("scan_strategy") == "internal_adapter"),
             "search_then_detail_routes": sum(1 for item in routes if item.get("scan_strategy") == "search_then_detail"),
             "catalogs": catalog_summary(catalogs),
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
         },
     }
     write_output(args.output, result)
@@ -772,7 +1128,103 @@ def select_routes(routes: list[dict[str, Any]], args: argparse.Namespace) -> lis
         if args.title and args.title not in norm(route.get("title")):
             continue
         selected.append(route)
+    if getattr(args, "all_routes", False) or args.route_limit <= 0:
+        return selected
     return selected[: args.route_limit]
+
+
+def count_values(values: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        key = norm(value) or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def route_coverage(routes: list[dict[str, Any]]) -> dict[str, Any]:
+    command_values: list[str] = []
+    for route in routes:
+        command_values.extend(str(item) for item in route.get("supported_commands") or [])
+    return {
+        "catalogs": count_values([norm(item.get("catalog")) for item in routes]),
+        "sub_catalogs": count_values([norm(item.get("sub_catalog")) for item in routes if norm(item.get("sub_catalog"))]),
+        "types": count_values([norm(item.get("type")) for item in routes]),
+        "resource_families": count_values([norm(item.get("resource_family")) for item in routes]),
+        "scan_strategies": count_values([norm(item.get("scan_strategy")) for item in routes]),
+        "search_tab_codes": count_values([norm(item.get("search_tab_code")) for item in routes]),
+        "supported_commands": count_values(command_values),
+    }
+
+
+def route_scan_plan(route: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "route_id": route.get("route_id"),
+        "title": route.get("title"),
+        "catalog": route.get("catalog"),
+        "sub_catalog": route.get("sub_catalog"),
+        "type": route.get("type"),
+        "page_url": route.get("page_url"),
+        "scan_strategy": route.get("scan_strategy"),
+        "search_tab_code": route.get("search_tab_code"),
+        "supported_commands": route.get("supported_commands") or [],
+        "requires_runtime_validation": bool(route.get("requires_runtime_validation")),
+    }
+
+
+def scan_route_summary(route_results: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses = count_values([norm(item.get("status")) for item in route_results])
+    return {
+        "routes_scanned": len(route_results),
+        "statuses": statuses,
+        "search_items_seen": sum(int(item.get("search_items_seen") or 0) for item in route_results),
+        "candidates": sum(len(item.get("candidates") or []) for item in route_results),
+        "detail_failures": sum(len(item.get("detail_failures") or []) for item in route_results),
+    }
+
+
+def run_site_index(args: argparse.Namespace) -> int:
+    extra_headers = parse_extra_headers(args.header)
+    access_token = args.access_token or os.environ.get("SMARTEDU_ACCESS_TOKEN")
+    routes = select_routes(routes_from_args(args), args)
+    if not routes:
+        raise ValueError("no matching routes")
+
+    candidates: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    route_results: list[dict[str, Any]] = []
+    scan_summary: dict[str, Any] = {}
+    if args.site_scan_json:
+        scan_data = load_json(args.site_scan_json)
+        candidates = [item for item in scan_data.get("candidates") or [] if isinstance(item, dict)]
+        failures = [item for item in scan_data.get("failures") or [] if isinstance(item, dict)]
+        route_results = [item for item in scan_data.get("routes") or [] if isinstance(item, dict)]
+        scan_summary = scan_data.get("summary") if isinstance(scan_data.get("summary"), dict) else {}
+
+    output = {
+        "site_index_schema": "smartedu-site-index/v1",
+        "source_skill": "smartedu-resources",
+        "source_name": "国家中小学智慧教育平台",
+        "site_url": "https://basic.smartedu.cn/",
+        "indexed_at": datetime.now(timezone.utc).isoformat(),
+        "routes": routes,
+        "scan_plan": [route_scan_plan(route) for route in routes],
+        "coverage": route_coverage(routes),
+        "candidates": candidates,
+        "failures": failures,
+        "scan_summary": scan_summary,
+        "summary": {
+            "routes": len(routes),
+            "search_then_detail_routes": sum(1 for item in routes if item.get("scan_strategy") == "search_then_detail"),
+            "internal_adapter_routes": sum(1 for item in routes if item.get("scan_strategy") == "internal_adapter"),
+            "runtime_validation_routes": sum(1 for item in routes if item.get("requires_runtime_validation")),
+            "candidates": len(candidates),
+            "failures": len(failures),
+            "route_scan_summary": scan_route_summary(route_results) if route_results else {},
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
+        },
+    }
+    write_output(args.output, output)
+    return 0
 
 
 def scan_payload(query: str, route: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -781,17 +1233,13 @@ def scan_payload(query: str, route: dict[str, Any], args: argparse.Namespace) ->
         "identity_code": args.identity_code,
         "keyword": query,
         "tab_codes": [route.get("search_tab_code") or DEFAULT_TAB_CODES[0]],
-        "resource_search_type": args.search_type,
         "cross_tenant": args.cross_tenant,
         "duplicate_filter": True,
         "search_order": {"field": args.order_field, "direction": args.order_direction},
-        "search_fields": [],
         "offset": args.offset,
         "limit": args.limit,
-        "combine_intentions": True,
-        "combine_resources": True,
-        "tags": [],
-        "origin": args.origin,
+        "combine_intentions": [],
+        "combine_resources": [],
     }
 
 
@@ -902,7 +1350,7 @@ def run_scan_catalog(args: argparse.Namespace) -> int:
             "candidates": len(candidates),
             "search_items_seen": sum(int(item.get("search_items_seen") or 0) for item in route_results),
             "online": not bool(args.search_response_json),
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
         },
     }
     write_output(args.output, output)
@@ -975,7 +1423,7 @@ def run_scan_site(args: argparse.Namespace) -> int:
             "candidates": len(candidates),
             "search_items_seen": sum(int(item.get("search_items_seen") or 0) for item in route_results),
             "online": not bool(args.search_response_json),
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
         },
     }
     write_output(args.output, output)
@@ -1109,7 +1557,7 @@ def run_page_profile(args: argparse.Namespace) -> int:
             "script_sources": len(script_sources),
             "scripts_fetched": min(len(script_sources), args.script_limit) - len(script_failures) if args.fetch_scripts else 0,
             "script_failures": len(script_failures),
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
             "offline_html": bool(args.html_file),
             "fetch_scripts": bool(args.fetch_scripts),
         },
@@ -1231,7 +1679,7 @@ def run_site_profile(args: argparse.Namespace) -> int:
         "access_policy": {
             "supports_auth_context": True,
             "auth_inputs": ["SMARTEDU_ACCESS_TOKEN", "SMARTEDU_COOKIE", "SMARTEDU_AUTHORIZATION", "SMARTEDU_HEADERS", "--access-token", "--cookie", "--header"],
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
             "secret_redaction": "输出只记录 auth_context，不写入 token、cookie、authorization 或 header 原文。",
             "login_limited_resources": "可能被标记为 requires_auth，后续交给 downloader 或专门下载团队处理。",
         },
@@ -1265,7 +1713,7 @@ def run_list_catalogs(args: argparse.Namespace) -> int:
             "resource_catalogs": sum(1 for item in catalogs if item.get("known_skill") == "smartedu-resources"),
             "external_catalogs": sum(1 for item in catalogs if item.get("external")),
             "textbook_catalogs": sum(1 for item in catalogs if item.get("internal_adapter") == "tchMaterial"),
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
         },
     }
     write_output(args.output, result)
@@ -1278,6 +1726,8 @@ def fetch_detail(
     access_token: str | None,
     cookie: str | None = None,
     extra_headers: dict[str, str] | None = None,
+    browser_state: str | None = None,
+    timeout: int = 20,
 ) -> dict[str, Any]:
     errors: list[str] = []
     for template in DETAIL_URLS:
@@ -1286,6 +1736,11 @@ def fetch_detail(
             return request_json(url, access_token=access_token, cookie=cookie, extra_headers=extra_headers)
         except Exception as exc:
             errors.append(str(exc))
+            if browser_state:
+                detail, status, _content_type, error = browser_request_json_status(url, browser_state, timeout=timeout)
+                if detail is not None:
+                    return detail
+                errors.append(f"browser_state {url}: status={status} error={error}")
     raise RuntimeError("; ".join(errors))
 
 
@@ -1310,7 +1765,17 @@ def run_candidates_from_detail(args: argparse.Namespace) -> int:
             elif isinstance(data, dict):
                 details.append(data)
     elif args.resource_id and args.catalog:
-        details.append(fetch_detail(args.resource_id, args.catalog, access_token, cookie=args.cookie, extra_headers=extra_headers))
+        details.append(
+            fetch_detail(
+                args.resource_id,
+                args.catalog,
+                access_token,
+                cookie=args.cookie,
+                extra_headers=extra_headers,
+                browser_state=args.browser_state,
+                timeout=args.timeout,
+            )
+        )
     else:
         print("error: provide --detail-json or both --catalog and --resource-id", file=sys.stderr)
         return 2
@@ -1337,7 +1802,8 @@ def run_candidates_from_detail(args: argparse.Namespace) -> int:
             "items_seen": items_seen,
             "candidates": len(all_candidates),
             "skipped": skipped,
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
+            "browser_state_context": bool(args.browser_state),
         },
     }
     write_output(args.output, result)
@@ -1412,7 +1878,8 @@ def run_search_resources(args: argparse.Namespace) -> int:
             "detail_failures": len(detail_failures),
             "online": not bool(args.search_response_json),
             "endpoint": args.search_url or SEARCH_URLS[0],
-            "auth_context": has_auth_context(access_token, args.cookie, extra_headers),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
+            "browser_state_context": bool(args.browser_state),
             "note": "搜索候选用于分析和排序；下载前应继续抓取详情并解析 ti_items。",
         },
     }
@@ -1420,6 +1887,48 @@ def run_search_resources(args: argparse.Namespace) -> int:
         result["detail_failures"] = detail_failures
     write_output(args.output, result)
     return 0 if candidates else 1
+
+
+def run_detail_probe(args: argparse.Namespace) -> int:
+    filters = load_task_filters(args.task_json)
+    extra_headers = parse_extra_headers(args.header)
+    access_token = args.access_token or os.environ.get("SMARTEDU_ACCESS_TOKEN")
+    query = args.query or norm(filters.get("query") or filters.get("core_topic") or filters.get("subject"))
+    if args.search_response_json:
+        data = load_json(args.search_response_json)
+        online = False
+        endpoint = args.search_response_json
+    else:
+        data = fetch_search_results(args, filters)
+        online = True
+        endpoint = args.search_url or SEARCH_URLS[0]
+    items = extract_search_items(data, args.limit)
+    probes = [probe_detail_for_search_item(item, args, access_token, extra_headers) for item in items]
+    status_counts = count_values([norm(item.get("detail_status")) for item in probes])
+    access_policy_counts = count_values([norm(item.get("detail_access_policy")) for item in probes])
+    result = {
+        "detail_probe_schema": "smartedu-detail-probe/v1",
+        "source_skill": "smartedu-resources",
+        "query": query,
+        "probed_at": datetime.now(timezone.utc).isoformat(),
+        "online_search": online,
+        "search_endpoint": endpoint,
+        "probes": probes,
+        "summary": {
+            "search_items_seen": len(items),
+            "probes": len(probes),
+            "status_counts": status_counts,
+            "access_policy_counts": access_policy_counts,
+            "details_accessible": sum(status_counts.get(key, 0) for key in ["ok_with_file_items", "ok_no_file_items"]),
+            "requires_auth": status_counts.get("requires_auth", 0),
+            "file_items": sum(int(item.get("file_item_count") or 0) for item in probes),
+            "parsed_candidates": sum(int(item.get("parsed_candidate_count") or 0) for item in probes),
+            "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
+            "browser_state_context": bool(args.browser_state),
+        },
+    }
+    write_output(args.output, result)
+    return 0 if probes else 1
 
 
 def append_arg(command: list[str], flag: str, value: Any) -> None:
@@ -1504,6 +2013,23 @@ def build_parser() -> argparse.ArgumentParser:
     route_map.add_argument("-o", "--output", help="写入 JSON 文件")
     route_map.set_defaults(func=run_route_map)
 
+    site_index = sub.add_parser("site-index", help="输出 SmartEdu 全站 route 覆盖和可选扫描候选索引")
+    site_index.add_argument("--route-map-json", help="route-map 输出 JSON；省略时通过 librarylist 构建")
+    site_index.add_argument("--library-list-json", help="本地 librarylist JSON；未提供 route-map 时使用")
+    site_index.add_argument("--site-scan-json", help="可选 scan-site 输出 JSON；提供后把候选、失败和扫描摘要并入索引")
+    site_index.add_argument("--route-id", help="只索引指定 route_id")
+    site_index.add_argument("--catalog", help="只索引指定 catalog")
+    site_index.add_argument("--sub-catalog", help="只索引指定 sub_catalog")
+    site_index.add_argument("--type", help="只索引指定栏目 type")
+    site_index.add_argument("--title", help="只索引标题包含该文本的栏目")
+    site_index.add_argument("--route-limit", type=int, default=0, help="最多索引多少条栏目路由；0 表示全部")
+    site_index.add_argument("--all-routes", action="store_true", help="索引全部匹配 route，等同于 --route-limit 0")
+    site_index.add_argument("--access-token", help="SmartEdu access token; prefer SMARTEDU_ACCESS_TOKEN")
+    site_index.add_argument("--cookie", help="SmartEdu cookie; prefer SMARTEDU_COOKIE")
+    site_index.add_argument("--header", action="append", help="额外请求头，格式 'Name: value'；也可用 SMARTEDU_HEADERS")
+    site_index.add_argument("-o", "--output", help="写入 JSON 文件")
+    site_index.set_defaults(func=run_site_index)
+
     page_profile = sub.add_parser("page-profile", help="分析 SmartEdu 页面 HTML/JS 结构线索")
     page_profile.add_argument("--url", help="页面 URL，默认 https://basic.smartedu.cn/")
     page_profile.add_argument("--html-file", help="本地 HTML 文件；用于离线分析或测试")
@@ -1525,17 +2051,20 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--type", help="只扫描指定栏目 type")
     scan.add_argument("--title", help="只扫描标题包含该文本的栏目")
     scan.add_argument("--route-limit", type=int, default=5, help="最多扫描多少条栏目路由")
+    scan.add_argument("--all-routes", action="store_true", help="扫描全部匹配 route，等同于 --route-limit 0")
     scan.add_argument("--query", help="扫描关键词；省略时使用栏目标题")
     scan.add_argument("--search-response-json", help="本地 SmartEdu 搜索响应 JSON；用于离线扫描测试")
     scan.add_argument("--search-url", help="自定义 SmartEdu 搜索接口 URL")
     scan.add_argument("--fetch-details", action="store_true", help="对扫描候选继续追踪详情 JSON 并解析 ti_items")
     scan.add_argument("--detail-dir", help="本地详情 JSON 目录；支持 {id}.json、{catalog}-{id}.json、{catalog}/{id}.json")
     scan.add_argument("--offline-details-only", action="store_true", help="只使用 --detail-dir，不联网抓取缺失详情")
-    scan.add_argument("--identity", default="GUEST", help="SmartEdu identity，默认 GUEST")
-    scan.add_argument("--identity-code", default="GUEST", help="SmartEdu identity_code，默认 GUEST")
+    scan.add_argument("--browser-state", help="可选 Playwright storage state；公开详情失败时用浏览器会话补请求")
+    scan.add_argument("--timeout", type=int, default=20, help="详情请求超时秒数")
+    scan.add_argument("--identity", default="家长", help="SmartEdu identity，默认 家长")
+    scan.add_argument("--identity-code", default="GUARDIAN", help="SmartEdu identity_code，默认 GUARDIAN")
     scan.add_argument("--search-type", default="resource", help="resource_search_type，默认 resource")
     scan.add_argument("--origin", default="basic", help="SmartEdu origin，默认 basic")
-    scan.add_argument("--order-field", default="default", help="排序字段")
+    scan.add_argument("--order-field", default="_score", help="排序字段")
     scan.add_argument("--order-direction", default="desc", help="排序方向")
     scan.add_argument("--offset", type=int, default=0, help="分页 offset")
     scan.add_argument("--limit", type=int, default=12, help="每条 route 最多输出候选数量")
@@ -1555,18 +2084,21 @@ def build_parser() -> argparse.ArgumentParser:
     site_scan.add_argument("--type", help="只扫描指定栏目 type")
     site_scan.add_argument("--title", help="只扫描标题包含该文本的栏目")
     site_scan.add_argument("--route-limit", type=int, default=10, help="最多扫描多少条栏目路由")
+    site_scan.add_argument("--all-routes", action="store_true", help="扫描全部匹配 route，等同于 --route-limit 0")
     site_scan.add_argument("--query", help="扫描关键词；省略时使用栏目标题")
     site_scan.add_argument("--search-response-json", help="本地 SmartEdu 搜索响应 JSON；用于离线扫描测试")
     site_scan.add_argument("--search-url", help="自定义 SmartEdu 搜索接口 URL")
     site_scan.add_argument("--fetch-details", action="store_true", help="对扫描候选继续追踪详情 JSON 并解析 ti_items")
     site_scan.add_argument("--detail-dir", help="本地详情 JSON 目录；支持 {id}.json、{catalog}-{id}.json、{catalog}/{id}.json")
     site_scan.add_argument("--offline-details-only", action="store_true", help="只使用 --detail-dir，不联网抓取缺失详情")
+    site_scan.add_argument("--browser-state", help="可选 Playwright storage state；公开详情失败时用浏览器会话补请求")
+    site_scan.add_argument("--timeout", type=int, default=20, help="详情请求超时秒数")
     site_scan.add_argument("--continue-on-error", action="store_true", help="某条 route 扫描失败时继续扫描后续 route")
-    site_scan.add_argument("--identity", default="GUEST", help="SmartEdu identity，默认 GUEST")
-    site_scan.add_argument("--identity-code", default="GUEST", help="SmartEdu identity_code，默认 GUEST")
+    site_scan.add_argument("--identity", default="家长", help="SmartEdu identity，默认 家长")
+    site_scan.add_argument("--identity-code", default="GUARDIAN", help="SmartEdu identity_code，默认 GUARDIAN")
     site_scan.add_argument("--search-type", default="resource", help="resource_search_type，默认 resource")
     site_scan.add_argument("--origin", default="basic", help="SmartEdu origin，默认 basic")
-    site_scan.add_argument("--order-field", default="default", help="排序字段")
+    site_scan.add_argument("--order-field", default="_score", help="排序字段")
     site_scan.add_argument("--order-direction", default="desc", help="排序方向")
     site_scan.add_argument("--offset", type=int, default=0, help="分页 offset")
     site_scan.add_argument("--limit", type=int, default=12, help="每条 route 最多输出候选数量")
@@ -1585,11 +2117,38 @@ def build_parser() -> argparse.ArgumentParser:
     detail.add_argument("--task-json", help="可选任务 JSON，用于传递 filters")
     detail.add_argument("--query", help="原始查询")
     detail.add_argument("--limit", type=int, default=50, help="最多处理详情数量")
+    detail.add_argument("--browser-state", help="可选 Playwright storage state；公开详情失败时用浏览器会话补请求")
+    detail.add_argument("--timeout", type=int, default=20, help="详情请求超时秒数")
     detail.add_argument("--access-token", help="SmartEdu access token; prefer SMARTEDU_ACCESS_TOKEN")
     detail.add_argument("--cookie", help="SmartEdu cookie; prefer SMARTEDU_COOKIE")
     detail.add_argument("--header", action="append", help="额外请求头，格式 'Name: value'；也可用 SMARTEDU_HEADERS")
     detail.add_argument("-o", "--output", help="写入 JSON 文件")
     detail.set_defaults(func=run_candidates_from_detail)
+
+    detail_probe = sub.add_parser("detail-probe", help="低频探测 SmartEdu 搜索候选能否展开详情 JSON")
+    detail_probe.add_argument("--query", help="搜索关键词；省略时从 --task-json 的 filters 中推断")
+    detail_probe.add_argument("--task-json", help="可选任务 JSON，用于传递 filters")
+    detail_probe.add_argument("--tab-code", action="append", help="SmartEdu tab_code，可重复或逗号分隔")
+    detail_probe.add_argument("--search-response-json", help="本地 SmartEdu 搜索响应 JSON；用于离线 probe")
+    detail_probe.add_argument("--search-url", help="自定义 SmartEdu 搜索接口 URL")
+    detail_probe.add_argument("--detail-dir", help="本地详情 JSON 目录；支持 {id}.json、{catalog}-{id}.json、{catalog}/{id}.json")
+    detail_probe.add_argument("--offline-details-only", action="store_true", help="只使用 --detail-dir，不联网抓取缺失详情")
+    detail_probe.add_argument("--identity", default="家长", help="SmartEdu identity，默认 家长")
+    detail_probe.add_argument("--identity-code", default="GUARDIAN", help="SmartEdu identity_code，默认 GUARDIAN")
+    detail_probe.add_argument("--search-type", default="resource", help="resource_search_type，默认 resource")
+    detail_probe.add_argument("--origin", default="basic", help="SmartEdu origin，默认 basic")
+    detail_probe.add_argument("--order-field", default="_score", help="排序字段")
+    detail_probe.add_argument("--order-direction", default="desc", help="排序方向")
+    detail_probe.add_argument("--offset", type=int, default=0, help="分页 offset")
+    detail_probe.add_argument("--limit", type=int, default=12, help="最多探测多少个搜索候选")
+    detail_probe.add_argument("--cross-tenant", action="store_true", help="允许跨租户搜索")
+    detail_probe.add_argument("--timeout", type=int, default=20, help="详情请求超时秒数")
+    detail_probe.add_argument("--browser-state", help="可选 Playwright storage state；公开详情失败时用浏览器会话补请求")
+    detail_probe.add_argument("--access-token", help="SmartEdu access token; prefer SMARTEDU_ACCESS_TOKEN")
+    detail_probe.add_argument("--cookie", help="SmartEdu cookie; prefer SMARTEDU_COOKIE")
+    detail_probe.add_argument("--header", action="append", help="额外请求头，格式 'Name: value'；也可用 SMARTEDU_HEADERS")
+    detail_probe.add_argument("-o", "--output", help="写入 JSON 文件")
+    detail_probe.set_defaults(func=run_detail_probe)
 
     search = sub.add_parser("search-resources", help="搜索 SmartEdu 资源并输出标准候选")
     search.add_argument("--query", help="搜索关键词；省略时从 --task-json 的 filters 中推断")
@@ -1600,11 +2159,13 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--fetch-details", action="store_true", help="对搜索候选继续追踪详情 JSON 并解析 ti_items")
     search.add_argument("--detail-dir", help="本地详情 JSON 目录；支持 {id}.json、{catalog}-{id}.json、{catalog}/{id}.json")
     search.add_argument("--offline-details-only", action="store_true", help="只使用 --detail-dir，不联网抓取缺失详情")
-    search.add_argument("--identity", default="GUEST", help="SmartEdu identity，默认 GUEST")
-    search.add_argument("--identity-code", default="GUEST", help="SmartEdu identity_code，默认 GUEST")
+    search.add_argument("--browser-state", help="可选 Playwright storage state；公开详情失败时用浏览器会话补请求")
+    search.add_argument("--timeout", type=int, default=20, help="详情请求超时秒数")
+    search.add_argument("--identity", default="家长", help="SmartEdu identity，默认 家长")
+    search.add_argument("--identity-code", default="GUARDIAN", help="SmartEdu identity_code，默认 GUARDIAN")
     search.add_argument("--search-type", default="resource", help="resource_search_type，默认 resource")
     search.add_argument("--origin", default="basic", help="SmartEdu origin，默认 basic")
-    search.add_argument("--order-field", default="default", help="排序字段")
+    search.add_argument("--order-field", default="_score", help="排序字段")
     search.add_argument("--order-direction", default="desc", help="排序方向")
     search.add_argument("--offset", type=int, default=0, help="分页 offset")
     search.add_argument("--limit", type=int, default=12, help="最多输出候选数量")

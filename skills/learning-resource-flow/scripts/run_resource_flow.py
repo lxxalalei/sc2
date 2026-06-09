@@ -187,28 +187,121 @@ def step_summary(source_name: str, status: str, payload: dict[str, Any], error: 
     }
 
 
+def smartedu_site_index(
+    args: argparse.Namespace,
+    skills_dir: Path,
+    package_root: Path,
+    work_dir: Path,
+) -> tuple[dict[str, Any], dict[str, str], str]:
+    if args.smartedu_site_index_json:
+        payload = load_json(args.smartedu_site_index_json)
+        return payload, {"smartedu_site_index": args.smartedu_site_index_json}, ""
+
+    script = skills_dir / "smartedu-resources" / "scripts" / "smartedu_resources.py"
+    output_json = work_dir / "smartedu-site-index.json"
+    cmd = [
+        sys.executable,
+        str(script),
+        "site-index",
+        "-o",
+        str(output_json),
+    ]
+    if args.smartedu_route_map_json:
+        cmd.extend(["--route-map-json", args.smartedu_route_map_json])
+    elif args.smartedu_library_list_json:
+        cmd.extend(["--library-list-json", args.smartedu_library_list_json])
+    else:
+        cmd.extend(["--library-list-json", str(skills_dir / "smartedu-resources" / "references" / "sample-librarylist.json")])
+    if args.smartedu_all_routes:
+        cmd.append("--all-routes")
+    else:
+        cmd.extend(["--route-limit", str(args.smartedu_route_limit)])
+    code, payload, error = run_json_command(cmd, package_root)
+    if not payload and output_json.exists():
+        payload = load_json(str(output_json))
+    return payload, {"smartedu_site_index": str(output_json)}, error if code else ""
+
+
+def smartedu_tab_codes(intent: dict[str, Any], site_index: dict[str, Any], limit: int) -> list[str]:
+    query = build_query(intent)
+    filters = intent_filters(intent)
+    wanted = " ".join(
+        [
+            query,
+            norm(filters.get("learning_domain")),
+            norm(filters.get("subject")),
+            norm(filters.get("core_topic")),
+            " ".join(str(item) for item in as_list(filters.get("resource_types"))),
+        ]
+    )
+    routes = site_index.get("routes") if isinstance(site_index.get("routes"), list) else []
+    scored: list[tuple[int, str]] = []
+    fallback: list[str] = []
+    for route in routes:
+        if not isinstance(route, dict) or route.get("scan_strategy") != "search_then_detail":
+            continue
+        tab = norm(route.get("search_tab_code"))
+        if not tab:
+            continue
+        if tab not in fallback:
+            fallback.append(tab)
+        route_text = " ".join(
+            norm(route.get(key))
+            for key in ["title", "catalog_name", "sub_catalog_name", "type", "resource_family", "catalog", "sub_catalog"]
+        )
+        score = 0
+        for token in [part for part in re_split_terms(wanted) if part]:
+            if token in route_text:
+                score += 1
+        scored.append((score, tab))
+
+    ordered: list[str] = []
+    for _, tab in sorted(scored, key=lambda item: item[0], reverse=True):
+        if tab not in ordered:
+            ordered.append(tab)
+    for tab in fallback:
+        if tab not in ordered:
+            ordered.append(tab)
+    return ordered[:limit]
+
+
+def re_split_terms(text: str) -> list[str]:
+    terms: list[str] = []
+    for part in str(text or "").replace("/", " ").replace("，", " ").replace(",", " ").split():
+        part = part.strip()
+        if part:
+            terms.append(part)
+    return terms
+
+
 def smartedu_candidates(
     intent: dict[str, Any],
     args: argparse.Namespace,
     skills_dir: Path,
     package_root: Path,
     work_dir: Path,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
     script = skills_dir / "smartedu-resources" / "scripts" / "smartedu_resources.py"
     filters = intent_filters(intent)
     query = build_query(intent)
     sources: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
+    work_files: dict[str, str] = {}
 
     profile_cmd = [
         sys.executable,
         str(script),
         "site-profile",
-        "--library-list-json",
-        str(skills_dir / "smartedu-resources" / "references" / "sample-librarylist.json"),
     ]
+    if args.smartedu_library_list_json:
+        profile_cmd.extend(["--library-list-json", args.smartedu_library_list_json])
+    else:
+        profile_cmd.extend(["--library-list-json", str(skills_dir / "smartedu-resources" / "references" / "sample-librarylist.json")])
     code, profile_payload, profile_error = run_json_command(profile_cmd, package_root)
     sources.append(source_summary("smartedu-resources:site-profile", "ok" if code == 0 else "failed", profile_payload, profile_error))
+    index_payload, index_work_files, index_error = smartedu_site_index(args, skills_dir, package_root, work_dir)
+    work_files.update(index_work_files)
+    sources.append(source_summary("smartedu-resources:site-index", "ok" if index_payload.get("site_index_schema") else "failed", index_payload, index_error))
 
     if wants_textbook(intent):
         cmd = [
@@ -241,6 +334,8 @@ def smartedu_candidates(
             "--limit",
             str(args.per_source_limit),
         ]
+        for tab in smartedu_tab_codes(intent, index_payload, args.smartedu_tab_limit):
+            cmd.extend(["--tab-code", tab])
         if args.smartedu_search_response_json:
             cmd.extend(["--search-response-json", args.smartedu_search_response_json])
         if args.smartedu_fetch_details:
@@ -255,7 +350,7 @@ def smartedu_candidates(
     if payload.get("candidates"):
         candidates.extend(payload["candidates"])
     sources.append(source_summary("smartedu-resources", status, payload, error))
-    return candidates, sources
+    return candidates, sources, work_files
 
 
 def web_candidates(
@@ -602,6 +697,12 @@ def main() -> int:
     parser.add_argument("--smartedu-fetch-details", action="store_true", help="SmartEdu 搜索后继续追踪详情")
     parser.add_argument("--smartedu-detail-dir", help="SmartEdu 详情 JSON 目录")
     parser.add_argument("--smartedu-offline-details-only", action="store_true", help="SmartEdu 详情只从本地目录读取")
+    parser.add_argument("--smartedu-site-index-json", help="已生成的 SmartEdu site-index JSON；提供后 flow 直接作为 source registry 使用")
+    parser.add_argument("--smartedu-route-map-json", help="SmartEdu route-map JSON；用于生成 site-index")
+    parser.add_argument("--smartedu-library-list-json", help="SmartEdu librarylist JSON；用于 site-profile 和 site-index")
+    parser.add_argument("--smartedu-route-limit", type=int, default=0, help="生成 SmartEdu site-index 时最多纳入多少 route；0 表示全部")
+    parser.add_argument("--smartedu-all-routes", action="store_true", help="生成 SmartEdu site-index 时纳入全部匹配 route")
+    parser.add_argument("--smartedu-tab-limit", type=int, default=8, help="从 SmartEdu site-index 中选择多少个搜索 tab")
     parser.add_argument("--select", help="用户确认下载的候选编号，例如 A,B 或 all；未提供时只输出候选清单")
     parser.add_argument("--library-dir", default="学习资料库", help="最终学习资料库目录")
     parser.add_argument("--index-dir", default=".learning-resource-work/index", help="资料库外部索引目录")
@@ -649,6 +750,7 @@ def main() -> int:
 
     all_candidates = list(local_items)
     source_runs = list(local_runs)
+    optimized_work_files: dict[str, str] = {}
     should_query_optimized = (
         args.always_search_sources
         or len(local_items) < args.local_satisfy_candidates
@@ -656,7 +758,7 @@ def main() -> int:
     )
     optimized_candidates: list[dict[str, Any]] = []
     if should_query_optimized:
-        optimized_candidates, optimized_runs = smartedu_candidates(intent, args, skills_dir, package_root, work_dir)
+        optimized_candidates, optimized_runs, optimized_work_files = smartedu_candidates(intent, args, skills_dir, package_root, work_dir)
         all_candidates.extend(optimized_candidates)
         source_runs.extend(optimized_runs)
     used_web = False
@@ -679,6 +781,7 @@ def main() -> int:
         "ranking": str(ranking_json),
     }
     work_files.update(local_work_files)
+    work_files.update(optimized_work_files)
     work_files.update(web_work_files)
     merged = {
         "candidate_schema": "learning-resource-candidate/v1",

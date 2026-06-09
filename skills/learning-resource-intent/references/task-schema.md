@@ -8,7 +8,7 @@
 {
   "intent_schema": "learning-resource-intent/v1",
   "status": "ready | needs_clarification | rejected",
-  "intent_type": "textbook | topic_resource | local_lookup | broad_exploration | unsupported",
+  "intent_type": "topic_resource | local_lookup | broad_exploration | exact_resource | unsupported",
   "confidence": 0.0,
   "normalized_query": "",
   "learner_age": null,
@@ -42,10 +42,10 @@
 
 ## 意图类型
 
-- `textbook`：教材、课本、教科书、课内同步资料。
 - `topic_resource`：围绕学习主题找资料，例如四则运算、恐龙百科、唐诗启蒙。
 - `local_lookup`：优先查询本地资料库。
 - `broad_exploration`：主题很宽，但用户是“看看/了解/推荐”而非直接下载。
+- `exact_resource`：用户指定了足以定位某个具体资源的名称、来源、版本或格式限制。
 - `unsupported`：不属于本项目资源范围。
 
 ## execution_tasks
@@ -71,14 +71,14 @@
 字段要求：
 
 - `task_id`：本次输出内唯一，使用 `task_001` 这种稳定编号。
-- `task_type`：搜索候选用 `source_search`，查本地用 `local_search`，教材候选列表用 `candidate_list`，极明确下载用 `direct_download`。
+- `task_type`：搜索候选用 `source_search`，查本地用 `local_search`，只列候选用 `candidate_list`，极明确下载用 `direct_download`。
 - `target_skill`：只写来源或检索 skill，不写 ranker/downloader。
 - `query`：适合来源搜索的中文搜索句，不要直接复制用户模糊原话。
 - `filters`：结构化筛选条件，字段名优先沿用顶层槽位。
 - `download_policy`：
   - `never`：只查询，不下载。
   - `after_user_selection`：必须先展示候选并让用户确认。
-  - `direct_if_exact`：教材等精确资源可以直接下载，但仍应由下载 skill 校验唯一性和来源。
+  - `direct_if_exact`：精确资源可以直接下载，但仍应由下载 skill 校验唯一性和来源。
 - `ranking_hints`：给 ranker 的偏好，例如 `authority_weight`、`age_fit_required`、`printable_required`。
 
 ## ranking_profile
@@ -112,7 +112,7 @@
 
 如果项目已有本地资料库外部索引，通常应先生成一个 `local-library-search` 任务，让 agent 检查本地是否已有可用资源。该任务不替代外部搜索；本地无命中或质量不足时，继续执行其他 source tasks。
 
-例如用户请求“找小学三年级数学教材”时，可以同时生成：
+例如用户请求“给 8 岁孩子找四则混合运算可打印练习题”时，可以同时生成：
 
 ```json
 [
@@ -121,32 +121,23 @@
     "task_type": "local_search",
     "target_skill": "local-library-search",
     "action": "search",
-    "query": "小学三年级数学教材",
-    "filters": {"stage": "小学", "grade": "三年级", "subject": "数学", "resource_types": ["教材"]},
+    "query": "8岁 四则混合运算 可打印练习题",
+    "filters": {"learner_age": 8, "subject": "数学", "core_topic": "四则混合运算", "resource_types": ["习题"], "format_preferences": ["pdf"]},
     "download_policy": "never"
   },
   {
     "task_id": "task_001",
-    "task_type": "candidate_list",
-    "target_skill": "smartedu-resources",
-    "action": "list-only",
-    "query": "小学三年级数学教材",
-    "filters": {"stage": "小学", "grade": "三年级", "subject": "数学"},
-    "download_policy": "never"
-  },
-  {
-    "task_id": "task_002",
     "task_type": "source_search",
     "target_skill": "web-learning-search",
     "action": "search",
-    "query": "小学三年级 数学 教材 PDF",
-    "filters": {"stage": "小学", "grade": "三年级", "subject": "数学", "resource_types": ["教材"]},
+    "query": "8岁 四则混合运算 可打印练习题 PDF",
+    "filters": {"learner_age": 8, "subject": "数学", "core_topic": "四则混合运算", "resource_types": ["习题"], "format_preferences": ["pdf"]},
     "download_policy": "after_user_selection"
   }
 ]
 ```
 
-当前 `smartedu-resources` 是已实现的 SmartEdu 官方资源总入口，`tchMaterial` 教材是 `smartedu-resources` 内部的一类资源分支。后续新增出版社官网、地方教育平台或本地资料库来源后，应同样作为候选来源加入任务列表。
+当前 `smartedu-resources` 是已实现的 SmartEdu 官方资源总入口之一。后续新增出版社官网、地方教育平台、音视频、百科或本地资料库来源后，应同样作为候选来源加入任务列表。
 
 ## 示例
 

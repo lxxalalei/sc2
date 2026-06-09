@@ -7,7 +7,7 @@
 1. 是否正确识别核心学习主题。
 2. 是否正确判断年龄/阶段是否缺失。
 3. 是否只在必要时追问。
-4. 是否把教材类需求和非教材主题需求区分开。
+4. 是否避免把单一资源类型当成默认判断起点。
 5. `ready` 时是否生成可执行的 `execution_tasks`。
 6. `execution_tasks` 是否包含 `target_skill`、`query`、`filters`、`download_policy`，能直接交给搜索和评分流程。
 
@@ -221,12 +221,33 @@
 }
 ```
 
-## 样例 9：教材候选查询，多来源候选
+## 样例 9：儿童百科视频和图文
 
 用户请求：
 
 ```text
-先看看小学三年级数学教材有哪些
+帮孩子找恐龙百科视频和图文资料
+```
+
+期望：
+
+```json
+{
+  "status": "needs_clarification",
+  "learning_domain": "百科",
+  "core_topic": "恐龙百科",
+  "resource_types": ["视频", "百科文章", "图片"],
+  "missing_slots": ["learner_age_or_grade"],
+  "clarifying_questions": ["孩子大概几岁或几年级？"]
+}
+```
+
+## 样例 10：可打印练习题，多来源候选
+
+用户请求：
+
+```text
+给 8 岁孩子找可打印四则混合运算练习题
 ```
 
 期望：
@@ -234,63 +255,26 @@
 ```json
 {
   "status": "ready",
-  "stage": "小学",
-  "grade": "三年级",
+  "learner_age": 8,
+  "stage": "小学低年级",
   "learning_domain": "数学",
   "subject": "数学",
-  "resource_types": ["教材"],
+  "core_topic": "四则混合运算",
+  "resource_goal": "练习",
+  "resource_types": ["习题"],
+  "format_preferences": ["pdf"],
+  "constraints": ["适合打印"],
   "execution_tasks": [
     {
-      "target_skill": "smartedu-resources",
-      "action": "list-only",
-      "query": "小学三年级数学教材",
-      "filters": {"stage": "小学", "grade": "三年级", "subject": "数学"},
+      "target_skill": "local-library-search",
+      "action": "search",
+      "query": "8岁 四则混合运算 可打印练习题",
       "download_policy": "never"
     },
     {
       "target_skill": "web-learning-search",
       "action": "search",
-      "query": "小学三年级 数学 教材 PDF",
-      "filters": {"stage": "小学", "grade": "三年级", "subject": "数学", "resource_types": ["教材"]},
-      "download_policy": "after_user_selection"
-    }
-  ]
-}
-```
-
-## 样例 10：教材下载明确但先候选确认
-
-用户请求：
-
-```text
-下载人教版小学三年级数学上册
-```
-
-期望：
-
-```json
-{
-  "status": "ready",
-  "stage": "小学",
-  "grade": "三年级",
-  "learning_domain": "数学",
-  "subject": "数学",
-  "version": "人教版",
-  "volume": "上册",
-  "resource_types": ["教材"],
-  "execution_tasks": [
-    {
-      "target_skill": "smartedu-resources",
-      "action": "list-only",
-      "query": "人教版小学三年级数学上册教材",
-      "filters": {"stage": "小学", "grade": "三年级", "subject": "数学", "version": "人教版", "volume": "上册"},
-      "download_policy": "after_user_selection"
-    },
-    {
-      "target_skill": "web-learning-search",
-      "action": "search",
-      "query": "人教版 小学三年级 数学 上册 教材 PDF",
-      "filters": {"stage": "小学", "grade": "三年级", "subject": "数学", "version": "人教版", "volume": "上册", "resource_types": ["教材"]},
+      "query": "8岁 四则混合运算 可打印练习题 PDF",
       "download_policy": "after_user_selection"
     }
   ]

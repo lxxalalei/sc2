@@ -1,11 +1,11 @@
 # 工作流测试用例
 
-## 用例 1：教材候选排序
+## 用例 1：可打印练习题候选排序
 
 用户：
 
 ```text
-帮我查找小学三年级数学人教版教材
+给 8 岁孩子找四则混合运算可打印练习题
 ```
 
 期望：
@@ -14,7 +14,7 @@
 learning-resource-intent
   -> local-library-search           # 如已有外部索引，先检索本地候选
   -> smartedu-resources site-profile
-  -> smartedu-resources             # SmartEdu 站点级 source，教材是站内资源分支
+  -> smartedu-resources             # 已优化站点 source 之一
   -> web-learning-search            # SmartEdu 候选不足或用户需要更多来源时再进入
   -> resource-source-discovery      # 对通用搜索结果中的资源站做粗筛
   -> web-resource-profiler          # 对高价值来源做结构分析
@@ -24,23 +24,35 @@ learning-resource-intent
   -> learning-resource-selector
 ```
 
-最终应返回多来源可选项，并给出评分、来源、格式和“需要登录或授权访问”等提示。
+最终应返回多来源可选项，并给出评分、来源、格式、可打印性和访问风险提示。
 
-## 用例 2：明确教材下载
+## 用例 2：儿童百科视频和图文
 
 用户：
 
 ```text
-下载人教版小学三年级数学上册
+帮孩子找恐龙百科视频和图文资料
 ```
 
 期望：
 
-先通过多个可用来源生成候选并完成评分选择。SmartEdu 站点候选统一来自 `smartedu-resources`；若用户选择的候选来源明确、可下载且授权条件满足，再执行下载；下载后候选带 `local_file`，可交给 analyzer 分析本地文件。
+先澄清孩子年龄或年级；需求明确后，通过本地索引、已优化来源和 web fallback 生成候选，视频和图文资料统一进入 analyzer/ranker/selector，不按格式分裂流程。
+
+## 用例 3：用户确认后下载归档
+
+用户：
+
+```text
+下载 A 和 C
+```
+
+期望：
+
+基于上一次 selection 结果继续执行。若用户选择的候选来源明确、可下载且授权条件满足，再执行下载；下载后候选带 `local_file`，可交给 analyzer 分析本地文件。
 
 下载完成后进入 `learning-library-organizer`，只将真实资源文件归档到最终资料库，归档 JSON 留在工作目录。归档完成后进入 `learning-library-index`，在资料库外部更新索引和去重记录。
 
-## 用例 3：主题资源
+## 用例 4：主题资源
 
 用户：
 
@@ -69,7 +81,7 @@ learning-resource-intent
 
 用户确认下载后，先进入 `learning-resource-downloader` 保存到工作缓存，再由 `learning-library-organizer` 按元数据和文件证据整理入库，最后由 `learning-library-index` 更新外部索引。
 
-## 用例 4：本地已有资料
+## 用例 5：本地已有资料
 
 用户：
 
@@ -89,7 +101,7 @@ learning-resource-intent
 
 如果本地候选质量足够高，先展示本地候选；如果本地无命中或质量不足，再继续调用其他 source skills。
 
-## 用例 5：大量搜索结果粗筛
+## 用例 6：大量搜索结果粗筛
 
 用户：
 
@@ -112,7 +124,7 @@ learning-resource-intent
 
 明显下载器、破解、广告或成人化来源应进入 `rejected_sources`。
 
-## 用例 6：已优化来源不足后网络补充
+## 用例 7：已优化来源不足后网络补充
 
 用户：
 
