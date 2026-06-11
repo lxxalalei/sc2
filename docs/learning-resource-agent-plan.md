@@ -1,6 +1,6 @@
 # 学习资源 Agent 项目计划与进度
 
-更新时间：2026-06-08
+更新时间：2026-06-11（遍历项目后全面更新）
 
 ## 项目目标
 
@@ -36,6 +36,29 @@
   -> 学习资料库                       只存放最终资源文件
 ```
 
+## 近期进度
+
+已完成的关键闭环：
+
+1. `smartedu-resources` 已能从 SmartEdu 搜索结果进入详情页展开，直接输出 `learning-resource-candidate/v1`。
+2. SmartEdu 搜索输出已加入 `model_context`，会显式暴露资源类型、来源维度、歧义点和可执行详情页 URL，供模型决定追问、覆盖范围或测试取样。
+3. SmartEdu 搜索已支持 intent 结构化字段到 `combine_resources` tag 维度筛选映射，版本做硬过滤、年级/册次做软过滤，过滤清空时自动回退。
+4. `learning-resource-flow --query` 在需求明确后默认执行 SmartEdu 搜索详情展开，将详情文件项接入 analyzer/ranker/selector；用户确认编号后可继续进入下载链路。
+5. `learning-resource-downloader` 已支持直接接收 `learning-resource-candidate/v1`，不再必须先包装成 selection。
+6. 下载器已支持 SmartEdu 私有 PDF、图片和加密 `m3u8` 视频的实际下载验证；视频会拉取 key、解密 AES-128 分片并合并成 `.ts`；已支持 `.env.local` 自动加载授权上下文。
+7. 候选编号已统一为 `1/2/3...`，同时保留旧 `A/B/C...` 的兼容输入，减少旧样例失效风险。
+8. SmartEdu 详情页链接已区分稳定详情页 URL（对外展示）和私有 NDR 下载地址（仅下载器使用），selector 优先展示详情页。
+9. 端到端真实测试验证：`math-game-v2` 流程成功下载 14 个资源（PDF 文档 + m3u8 视频转 .ts），归档到 `小学/一年级/数学/文档|视频/人教版/`，外部索引 14 条记录、0 失败。
+10. 离线 smoke tests 已扩展到 15 个测试方法（39 个子测试项全部通过），覆盖 intent、web-to-selection、SmartEdu 详情链接、source-first flow、SmartEdu 搜索+详情、本地优先、下载归档索引、source discovery + profiler、SmartEdu 全站能力（站点画像/路由图/站点索引/页面画像/栏目扫描/全站扫描/教材/搜索/搜索详情/同步课堂/显式详情 URL/详情探测/站点索引详情覆盖/候选解析）、浏览器会话脱敏、多格式 analyzer、下载器授权策略、m3u8 合并、candidate 直接下载、资料库链路。
+
+当前仍然缺口：
+
+1. `learning-resource-intent` 已补上范围型需求字段，但通用范围型需求的判断和追问策略还需继续细化。
+2. SmartEdu 搜索、详情、分析、评分、选择、下载已在脚本链路中串通；仍需继续补齐更多栏目详情模板和真实账号态批量稳定性。
+3. SmartEdu 站点内仍有少量栏目/详情模板需要继续补齐，特别是搜索结果中混入的 `areaSite`、部分 `prepareLesson` 和其他专题栏目的差异化详情入口。
+4. `search-resources --fetch-details` 仍需从详情页 HTML/JS 线索推断更多接口模板，减少对固定 URL 模板的依赖。
+5. 已修复 `filter_search_items_by_tags` 的语法错误（类型注解缺少 `]`），此 bug 曾导致 SmartEdu source 在 flow 模式下全部失败。
+
 ## 设计约束
 
 - 所有 skill 的 `SKILL.md`、示例、面向 agent 的操作说明和 UI 元数据以中文为基本语言。
@@ -56,7 +79,7 @@
 - 串联 source skill、analyzer、ranker，避免只执行搜索不执行评分。
 - 提供通用 source-first 脚本化测试链路，覆盖本地检索、已优化来源、web fallback、分析、评分和选择。
 
-状态：已创建第一版，通用 source-first 链路已跑通；教材、习题、课件、音视频、图文等请求都应按多来源候选处理。
+状态：已创建第一版，通用 source-first 链路已跑通；教材、习题、课件、音视频、图文等请求都应按多来源候选处理。当前已支持直接传入自然语言 `--query`，由 flow 调用 intent 生成结构化需求；需求明确后默认对 SmartEdu 搜索候选执行详情展开，并把真实文件项送入 analyzer/ranker/selector。用户确认编号后，可继续触发 downloader、organizer 和 indexer。flow 已支持 `--smartedu-browser-state`、`--access-token`、`--cookie`、`--header` 透传 SmartEdu 授权；`--probe-only` 可做下载前探测；下载后会自动对本地文件重新执行 analyzer 验证内容。端到端真实测试 `math-game-v2` 已验证 14 个资源（PDF + m3u8 视频）从搜索到归档全链路。
 
 ### 1. `learning-resource-intent`
 
@@ -76,9 +99,10 @@
 - 学习目标：启蒙、预习、复习、练习、拓展、阅读、听赏、查阅等。
 - 资源类型：教材、课件、习题、试卷、视频、音频、图片、绘本、百科文章、游戏、教案等。
 - 格式偏好：PDF、DOC/DOCX、PPT/PPTX、图片、音频、视频、网页、压缩包等。
-- 版本/出版社、册次等字段只在用户明确提出时抽取，不应驱动默认流程。
+- 请求范围：候选推荐、完整覆盖、精确资源等，其中“全部/全套/整套”是通用范围意图，不等同于教材上下册。
+- 版本/出版社、册次等字段只在用户明确提出或唯一定位资源确实需要时抽取，不应驱动默认流程。
 
-状态：已创建第一版，已增加可执行任务契约。
+状态：已创建第一版，已增加可执行任务契约；当前已实现 `scripts/analyze_intent.py` 和 `scripts/test_intent.py`，覆盖 14 个基础样例，并已接入主 smoke tests。已增加 `request_scope`、`coverage_targets` 字段，将"全部/全套/整套"建模为通用范围意图；`年级 + 学科 + 版本` 只作为检索约束，不再自动升级为精确资源。后续重点是把范围型需求的追问策略和 SmartEdu 全站搜索意图继续细化。
 
 ### 2. Source Skills
 
@@ -108,7 +132,7 @@ Source skill 统一职责：
 - 返回统一候选资源列表。
 - 不直接决定最终质量排名。
 
-状态：`smartedu-resources`、`web-learning-search`、`resource-source-discovery`、`web-resource-profiler`、`generic-web-source`、`local-library-search` 已完成第一版，其余待创建。`smartedu-resources` 当前可输出站点能力画像、栏目路由图和页面线索画像，可按栏目路由执行候选扫描或批量扫描多个栏目，并把 SmartEdu 栏目、搜索结果、搜索候选详情、教材候选和详情文件项统一转为候选；在线搜索接口在命令行环境可能受 WAF/登录态影响，OpenClaw 或账号态运行时应传入可用 endpoint/token/header，上线前继续做真实环境联调。
+状态：`smartedu-resources`、`web-learning-search`、`resource-source-discovery`、`web-resource-profiler`、`generic-web-source`、`local-library-search` 已完成第一版，其余待创建。`smartedu-resources` 当前可输出站点能力画像、栏目路由图、页面线索画像和详情探测矩阵，可按栏目路由执行候选扫描或批量扫描多个栏目，并把 SmartEdu 栏目、搜索结果、搜索候选详情、教材候选和详情文件项统一转为候选。已实现 intent 结构化字段到 `combine_resources` tag 维度筛选映射（版本硬过滤、年级/册次软过滤，过滤清空自动回退）；搜索输出已加入 `model_context` 供模型决策；详情 URL 推断已支持从搜索项显式 URL 和详情页 URL 反推；`detail-probe` 可输出按栏目/资源类型聚合的详情可访问性矩阵；`safe_detail_page` 已覆盖 `syncClassroom` 和 `qualityCourse` 特殊详情页 URL 生成；搜索请求已切换为 `x-search` 新版端点，User-Agent 已更新为真实浏览器标识；已支持 `.env.local` 自动加载授权上下文。在线搜索接口在命令行环境可能受 WAF/登录态影响，OpenClaw 或账号态运行时应传入可用 endpoint/token/header，上线前继续做真实环境联调。
 
 ### 3. `learning-resource-ranker`
 
@@ -175,7 +199,7 @@ Source skill 统一职责：
 - 让用户确认要下载哪些资源。
 - 支持“全部下载”“只下载官方”“只要 PPT/视频/习题”等选择。
 
-状态：已创建第一版，支持 `learning-resource-selection/v1` 输出。
+状态：已创建第一版，支持 `learning-resource-selection/v1` 输出；当前选项编号已从字母统一为数字，便于模型输出和用户选择一致，同时保留字母兼容输入。SmartEdu 候选已区分稳定详情页 URL（对外展示）和私有 NDR 下载地址（下载器使用）。
 
 ### 6. `learning-resource-downloader`
 
@@ -199,7 +223,7 @@ Source skill 统一职责：
 - HTML 页面快照
 - ZIP/RAR/7z
 
-状态：已创建第一版，支持 `learning-resource-download/v1` 输出；仅下载到工作缓存目录，不进入最终资料库。
+状态：已创建第一版，支持 `learning-resource-download/v1` 输出；已支持直接接收 `learning-resource-candidate/v1`，并完成 SmartEdu PDF、图片和加密 m3u8 视频的真实下载验证（AES-128 解密、分片合并为 `.ts`）。已支持 `.env.local` 自动加载授权上下文、文件内容校验、SmartEdu 私有 NDR access token 注入、浏览器会话探测。仅下载到工作缓存目录，不进入最终资料库。
 
 ### 7. `learning-library-organizer`
 
@@ -357,8 +381,8 @@ Source skill 统一职责：
 - [x] P2：浏览器会话命令应至少包含 `login`、`check`、`export-context`、`request` 四个入口。`login` 让用户在浏览器中完成正常登录；`check` 验证当前会话能否访问搜索、详情和 NDR 文件探测；`export-context` 只导出可复用的脱敏会话摘要或本地 state 路径；`request` 用浏览器上下文低频请求指定 URL，用于详情 JSON 和 `x-nd-auth` 短时签名场景。
 - [x] P2：浏览器状态保存到工作目录。默认使用 `.learning-resource-work/smartedu-browser/state.json` 和 `.learning-resource-work/smartedu-browser/session-summary.json`；前者视为敏感运行态文件，不进 git、不进 skill 包，后者只能记录 `has_cookie=true`、过期时间、域名覆盖和最近检查结果。
 - [x] P2：安全边界固定。项目文件、日志、候选 JSON、计划文档不得落地原始账号、密码、cookie、MAC、Authorization、`x-nd-auth`；命令输出只允许记录 `auth_context=true/false`、HTTP 状态、资源域名和脱敏错误。
-- [ ] P3：把浏览器会话接入详情展开。`search-resources --fetch-details` 增加可选 `--browser-state` 或 `--browser-request` 参数；未提供时仍走公开 HTTP；提供后只对公开方式失败的详情做补充请求，默认低频、限量、可中断。
-- [ ] P3：把浏览器会话接入下载探测。downloader 在 `--allow-auth` 且提供浏览器会话时，优先做 `probe-only`，确认 `content-type`、大小、range 支持和过期策略，再允许正式下载；不要把浏览器会话作为静默默认行为。
+- [x] P3：把浏览器会话接入详情展开。`search-resources --fetch-details` 和 `learning-resource-flow` 已支持可选 `--browser-state`；未提供时仍走公开 HTTP；提供后可对公开方式失败的详情做补充请求，保持低频、限量、可中断。
+- [x] P3：把浏览器会话接入下载探测。flow 在 `--probe-only` 下会把 `--smartedu-browser-state` 传给 downloader；downloader 在 `--allow-auth` 且提供浏览器会话时优先做探测，不把浏览器会话作为静默默认行为。
 - [x] P3：补齐离线回归。已为 `detail-probe`、详情失败分类、浏览器 state 脱敏、`site-index` 详情覆盖聚合增加 fixture 和 smoke test；浏览器真实登录只做人工联调，不进入默认离线测试。
 
 SmartEdu 详情展开具体要做什么：
@@ -477,7 +501,7 @@ SmartEdu 详情展开具体要做什么：
 - 将根目录 `README.md` 从单一爬虫说明重构为项目级首页，说明整体目标、当前 skills、资料库原则和下一步计划。
 - 将原 README 中的 SmartEdu 爬虫用法迁移到 `docs/smartedu-textbooks-usage.md`，作为模块说明保留。
 - 修正项目需求理解方向：目标用户是 3-12 岁儿童与家长，需求围绕随机学习主题展开，不默认限定为小学教材或教辅。
-- 将 `learning-resource-intent` 重构为主题优先模型，优先澄清孩子年龄/阶段、核心主题、学习目标和资源形式；教材版本和册次只在教材类需求中作为关键槽位。
+- 将 `learning-resource-intent` 重构为主题优先模型，优先澄清孩子年龄/阶段、核心主题、学习目标、资源形式和请求范围；版本、出版社和册次只在用户明确提出或唯一定位资源确实需要时作为约束字段。
 - 为 `learning-resource-intent` 增加 `references/test-cases.md`，沉淀 12 个典型用户请求及期望输出，用于后续回归检查。
 - 为 `learning-resource-intent` 增加 `references/task-schema.md`，将输出从单纯意图抽取升级为可执行任务契约：`intent` 槽位负责理解需求，`execution_tasks` 负责驱动来源搜索，`ranking_profile` 负责传递评分偏好。
 - 创建 `learning-resource-ranker` 第一版，负责对候选学习资源进行启发式质量评分、排序和风险解释；新增 `references/ranking-schema.md`、`references/test-cases.md` 和 `scripts/rank_candidates.py`。
@@ -493,6 +517,12 @@ SmartEdu 详情展开具体要做什么：
 - 优化 `web-learning-search`：去掉内置固定搜索引擎依赖，改为默认接收 agent 通用搜索结果 JSON，只负责标准化为 `learning-resource-candidate/v1`；HTML 解析仅保留为本地调试入口。
 - 调整来源策略：任何资源类型、主题或格式都不与单一 source 硬绑定；已实现来源只作为候选来源进入统一分析、评分和选择流程。
 - 创建 `learning-resource-downloader` 第一版，负责根据 selector 选项编号下载资源到工作缓存目录；已验证授权资源会被安全跳过、无效编号会进入失败列表。本地 HTTP 直链下载测试受当前沙箱监听端口限制，留待具备网络/服务权限环境验证。
+- 为 `learning-resource-intent` 增加通用范围型需求字段与回归样例：新增 `request_scope`、`coverage_targets`，补齐“全部资料/完整覆盖”和“版本只是检索约束”的判断。
+- 修正 `learning-resource-intent` 的精确资源边界：`年级 + 学科 + 版本` 不再被误判为精确资源，只有 URL、明确资源名或教材定位条件足够完整时才进入 `exact_resource`。
+- 将 `learning-resource-flow` 调整为需求明确后默认对 SmartEdu 搜索候选执行 `--fetch-details`，并把详情文件项写入 `smartedu-candidates.json` 后继续 analyzer、ranker、selector。
+- 为 flow 增加 `--smartedu-browser-state`，供 SmartEdu 搜索/详情阶段复用浏览器会话；在 `--probe-only` 下载探测阶段同样透传给 downloader。
+- 更新 `smartedu-resources` 的 `model_context` 提示语，去掉“随便一个/上下册导向”的默认措辞，改为通用范围覆盖、测试取样和详情展开决策。
+- 为 `scripts/run_smoke_tests.py` 增加 `learning-resource-flow-smartedu-search-details` 用例，验证自然语言需求可通过 SmartEdu 搜索 + 离线详情 fixture 直接生成包含 `m3u8/pdf/jpg` 的候选清单。
 
 ### 2026-06-05
 
@@ -579,3 +609,21 @@ SmartEdu 详情展开具体要做什么：
 - 增强 `search-resources --fetch-details` 与 route 扫描详情追踪：成功展开和失败保留的候选都会写入 `raw.smartedu_detail`，`detail_failures` 记录 `detail_status`、`detail_access_policy`、`detail_endpoint_family` 和脱敏错误。
 - 增强详情 URL 推断：`search-resources --fetch-details` 和 `detail-probe` 会优先使用搜索项显式详情 JSON URL，并可从详情页 URL 的 `contentId`、`catalogType`、`subCatalog`、`contentType` 反推详情身份字段；新增离线 HTTP fixture 验证显式详情 JSON URL 可展开为候选。
 - 增强 `site-index` 详情覆盖聚合：合并带详情追踪的 `scan-site` 结果时，输出 `detail_coverage` 和 route 扫描摘要中的详情状态/访问策略计数。
+
+### 2026-06-11
+
+- 继续收敛 `learning-resource-intent` 的通用化边界：新增 `request_scope`、`coverage_targets`，把”全部/全套/整套/完整覆盖”建模为通用范围意图，而不是教材上下册分支。
+- 修正精确资源判断：`年级 + 学科 + 版本` 只作为检索约束，不再自动升级为 `exact_resource`；只有 URL、明确资源名或教材定位条件足够完整时才进入精确资源。
+- 扩展 `skills/learning-resource-intent/scripts/test_intent.py` 到 14 个回归样例，新增”全部资料范围意图”和”版本只是检索约束”保护用例。
+- 调整 `learning-resource-flow`：需求明确后默认对 SmartEdu 搜索候选执行 `--fetch-details`，并把详情文件项工作文件固定写入 `smartedu-task.json`、`smartedu-candidates.json`，再继续 analyzer、ranker、selector。
+- 为 flow 增加 `--smartedu-browser-state`、`--access-token`、`--cookie`、`--header`，用于 SmartEdu 搜索/详情阶段复用浏览器会话和透传授权上下文；在 `--probe-only` 下载探测阶段同样向 downloader 透传。
+- 更新 `smartedu-resources` 的 `model_context` 提示语，去掉”随便一个/上下册导向”的默认表述，改为通用范围覆盖、测试取样与详情展开决策。
+- 增强 `smartedu-resources` 搜索：实现 intent 结构化字段到 `combine_resources` tag 维度筛选映射，版本做硬过滤、年级/册次做软过滤，过滤清空自动回退；新增 `filter_search_items_by_tags()`、`tag_value_matches()`、`grade_to_chinese()`、`search_model_context()` 等函数。
+- 增强 `smartedu-resources` 详情追踪：新增 `relation_resource_details()` 解析详情 JSON 中 `relations` 关联资源；`safe_detail_page()` 覆盖 `syncClassroom` 和 `qualityCourse` 特殊详情页 URL 生成；`detail_identity_from_url()` 从详情页 URL 反推资源身份字段；搜索请求切换 `x-search` 新版端点，User-Agent 更新为真实浏览器标识。
+- 增强 `smartedu-resources` 授权上下文：已支持 `.env.local` 自动加载授权上下文（`SMARTEDU_SDP_APP_ID` 等），去掉旧 `Bearer accessToken` 注入方式，保留 `Authorization`、`Cookie` 和 `sdp-app-id` header。
+- 增强 `learning-resource-downloader`：新增完整 m3u8 HLS 下载能力（`parse_m3u8_attributes()`、`media_segment_urls()`、`decrypt_aes128_segment()` 等），支持 AES-128 加密分片解密与合并为 `.ts`；新增 SmartEdu 私有 NDR access token 注入（`should_append_access_token()`、`append_access_token()`）；新增文件内容校验（`validate_downloaded_file()`、`sniff_file_kind()`）；新增 `.env.local` 自动加载；选项编号支持数字/字母兼容映射。
+- 增强 `learning-resource-flow`：下载后自动对本地文件重新执行 analyzer 验证内容（`analyze_downloaded_files()`）；flow auth 参数透传到 SmartEdu source 和 downloader。
+- 增强 `learning-resource-selector`：新增 `user_facing_url()` 区分 SmartEdu 稳定详情页 URL（对外展示）和私有 NDR 下载地址（下载器使用）；选项 ID 从字母统一为数字。
+- 为 `scripts/run_smoke_tests.py` 增加多个测试方法：`test_learning_resource_intent`、`test_smartedu_selection_links`、`test_smartedu_flow_search_to_detail_selection`、`test_downloader_m3u8_merge`、`test_downloader_candidate_schema_input`，smoke test 方法总数扩展到 15 个。
+- 端到端真实测试 `math-game-v2`：成功完成”一年级数学游戏”全链路，从 SmartEdu 搜索 14 个候选，下载 14 个资源（PDF 文档 + m3u8 视频转 .ts），归档到 `小学/一年级/数学/文档|视频/人教版/`，外部索引 14 条记录、0 失败。
+- 修复 `smartedu_resources.py` 中 `filter_search_items_by_tags` 的语法错误（类型注解 `list[dict[str, Any]` 缺少 `]`），此 bug 曾导致 SmartEdu source 在 flow 模式下全部 `SyntaxError` 失败。

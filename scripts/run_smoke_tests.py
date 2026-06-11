@@ -109,6 +109,48 @@ class SmokeRunner:
             shutil.rmtree(self.work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
+    def test_learning_resource_intent(self) -> None:
+        intent_output = self.work_dir / "intent-output.json"
+        query_flow_output = self.work_dir / "intent-query-flow.json"
+        self.command(
+            "learning-resource-intent-tests",
+            [
+                sys.executable,
+                self.script("learning-resource-intent", "scripts", "test_intent.py"),
+            ],
+        )
+        self.command(
+            "learning-resource-intent-analyze",
+            [
+                sys.executable,
+                self.script("learning-resource-intent", "scripts", "analyze_intent.py"),
+                "给8岁孩子找四则混合运算练习题，最好能打印",
+                "--output-json",
+                str(intent_output),
+            ],
+        )
+        data = load_json(intent_output)
+        assert_true(data.get("status") == "ready", "明确学习资源需求应进入 ready 状态")
+        assert_true(data.get("core_topic") == "四则混合运算", "intent 应识别更具体的四则混合运算主题")
+        assert_true(data.get("resource_goal") == "练习", "intent 应识别练习目标")
+        assert_true(len(data.get("execution_tasks") or []) >= 1, "ready intent 应生成执行任务")
+        self.command(
+            "learning-resource-flow-query-intent",
+            [
+                sys.executable,
+                self.script("learning-resource-flow", "scripts", "run_resource_flow.py"),
+                "--query",
+                "帮我找点数学学习资料",
+                "--work-dir",
+                str(self.work_dir / "intent-query-flow"),
+                "-o",
+                str(query_flow_output),
+            ],
+        )
+        flow_data = load_json(query_flow_output)
+        assert_true(flow_data.get("status") == "needs_clarification", "flow 应能从自然语言 query 自动进入澄清状态")
+        assert_true(bool(flow_data.get("work_files", {}).get("intent")), "flow query 入口应记录生成的 intent 文件")
+
     def test_web_to_selection(self) -> Path:
         search_results = self.work_dir / "search-results.json"
         task = self.work_dir / "task.json"
@@ -200,6 +242,60 @@ class SmokeRunner:
         assert_true(selection_data.get("shown_count", 0) >= 1, "selector 应至少展示一个候选")
         return selection
 
+    def test_smartedu_selection_links(self) -> None:
+        ranking_json = self.work_dir / "smartedu-selection-ranking.json"
+        selection_json = self.work_dir / "smartedu-selection-links.json"
+        detail_page = (
+            "https://basic.smartedu.cn/resourceCenter/detail"
+            "?contentType=NDR_NationalLesson&contentId=smartedu-001&catalogType=resourceCenter&subCatalog=course"
+        )
+        private_url = "https://r3-ndr-private.ykt.cbern.com.cn/edu_product/esp/assets/smartedu-001.pkg/lesson.pdf"
+        write_json(
+            ranking_json,
+            {
+                "ranking_schema": "learning-resource-ranking/v1",
+                "ranked_candidates": [
+                    {
+                        "rank": 1,
+                        "quality_level": "high",
+                        "final_score": 0.88,
+                        "recommendation": "优先展示",
+                        "reasons": ["官方来源", "详情页可打开查看"],
+                        "candidate": {
+                            "source": "smartedu-resources",
+                            "source_name": "国家中小学智慧教育平台",
+                            "title": "SmartEdu 分数讲义",
+                            "source_url": private_url,
+                            "format": "pdf",
+                            "resource_type": "文档",
+                            "downloadable": True,
+                            "requires_auth": True,
+                            "official": True,
+                            "raw": {
+                                "detail_page": detail_page,
+                                "url_candidates": [private_url],
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+        self.command(
+            "smartedu-selector-detail-link",
+            [
+                sys.executable,
+                self.script("learning-resource-selector", "scripts", "select_candidates.py"),
+                str(ranking_json),
+                "-o",
+                str(selection_json),
+            ],
+        )
+        selection = load_json(selection_json)
+        option = selection["options"][0]
+        assert_true(option.get("source_url") == detail_page, "SmartEdu 选项对外展示应使用稳定详情页")
+        assert_true(option.get("download_url") == private_url, "SmartEdu 选项应保留真实下载地址供下载器使用")
+        assert_true(option.get("candidate", {}).get("source_url") == private_url, "原始候选下载地址不应被覆盖")
+
     def test_source_first_flow(self) -> None:
         intent_json = self.work_dir / "source-first-intent.json"
         search_results = self.work_dir / "source-first-web-results.json"
@@ -268,6 +364,7 @@ class SmokeRunner:
                 str(intent_json),
                 "--smartedu-search-response-json",
                 str(sample_smartedu_search),
+                "--no-smartedu-fetch-details",
                 "--web-search-results-json",
                 str(search_results),
                 "--web-profile-html-file",
@@ -295,6 +392,48 @@ class SmokeRunner:
         assert_true(bool(selection.get("work_files", {}).get("source_discovery")), "source-first flow 应记录来源发现工作文件")
         assert_true(bool(selection.get("work_files", {}).get("generic_candidates")), "source-first flow 应记录通用抽取候选文件")
         assert_true(selection.get("shown_count", 0) >= 1, "source-first flow 应生成用户可选候选")
+
+    def test_smartedu_flow_search_to_detail_selection(self) -> None:
+        output_json = self.work_dir / "smartedu-flow-selection.json"
+        detail_dir = self.work_dir / "smartedu-flow-details"
+        flow_work = self.work_dir / "smartedu-flow-work"
+        detail_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            self.skills / "smartedu-resources" / "references" / "sample-detail.json",
+            detail_dir / "qc-math-001.json",
+        )
+        self.command(
+            "learning-resource-flow-smartedu-search-details",
+            [
+                sys.executable,
+                self.script("learning-resource-flow", "scripts", "run_resource_flow.py"),
+                "--query",
+                "我要三年级数学课程的全部资料",
+                "--skip-local-search",
+                "--smartedu-search-response-json",
+                str(self.skills / "smartedu-resources" / "references" / "sample-search-response.json"),
+                "--smartedu-detail-dir",
+                str(detail_dir),
+                "--smartedu-offline-details-only",
+                "--min-source-candidates",
+                "1",
+                "--work-dir",
+                str(flow_work),
+                "-o",
+                str(output_json),
+            ],
+        )
+        selection = load_json(output_json)
+        assert_true(selection.get("status") == "awaiting_user_selection", "明确需求经 SmartEdu 搜索详情后应进入候选选择")
+        assert_true(selection.get("shown_count", 0) >= 3, "SmartEdu 详情文件项应进入 selector")
+        formats = {item.get("format") for item in selection.get("options") or []}
+        assert_true({"m3u8", "pdf", "jpg"}.issubset(formats), "SmartEdu 详情应展开视频、文档和图片资源")
+        assert_true(any(item.get("downloadable") for item in selection.get("options") or []), "详情文件项应标记为可下载")
+        smartedu_candidates_file = selection.get("work_files", {}).get("smartedu_candidates")
+        assert_true(bool(smartedu_candidates_file), "flow 应记录 SmartEdu 候选工作文件")
+        smartedu_data = load_json(Path(smartedu_candidates_file))
+        assert_true(smartedu_data.get("summary", {}).get("fetch_details") is True, "flow 默认应开启 SmartEdu 详情展开")
+        assert_true(smartedu_data.get("summary", {}).get("details_fetched") == 1, "离线详情应成功展开 1 个搜索候选")
 
     def test_resource_flow_local_first(self) -> None:
         intent_json = self.work_dir / "local-first-intent.json"
@@ -537,6 +676,10 @@ class SmokeRunner:
         textbook_work_dir = self.work_dir / "smartedu-textbook-work"
         search_candidates_json = self.work_dir / "smartedu-search-candidates.json"
         search_detail_candidates_json = self.work_dir / "smartedu-search-detail-candidates.json"
+        sync_classroom_search_json = self.work_dir / "smartedu-sync-classroom-search.json"
+        sync_classroom_output_json = self.work_dir / "smartedu-sync-classroom-output.json"
+        sync_classroom_url_output_json = self.work_dir / "smartedu-sync-classroom-url-output.json"
+        sync_classroom_detail_dir = self.work_dir / "smartedu-sync-classroom-details"
         explicit_detail_search_json = self.work_dir / "smartedu-explicit-detail-search.json"
         explicit_detail_output_json = self.work_dir / "smartedu-explicit-detail-output.json"
         explicit_detail_server_dir = self.work_dir / "smartedu-explicit-detail-http"
@@ -809,6 +952,119 @@ class SmokeRunner:
         ]
         assert_true(any(item.get("detail_status") == "ok_with_file_items" for item in detail_summaries), "详情候选应回写可展开状态")
         assert_true(any(item.get("detail_status") == "detail_not_found_in_dir" for item in detail_summaries), "详情失败候选应回写失败分类")
+
+        sync_classroom_detail_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            sync_classroom_detail_dir / "national-activity-001.json",
+            {
+                "id": "national-activity-001",
+                "title": "生活中的负数",
+                "resource_type_code": "national_lesson",
+                "resource_type_code_name": "国家课",
+                "tag_list": [
+                    {"tag_dimension_id": "zxxxd", "tag_name": "小学"},
+                    {"tag_dimension_id": "zxxnj", "tag_name": "六年级"},
+                    {"tag_dimension_id": "zxxxk", "tag_name": "数学"},
+                    {"tag_dimension_id": "zxxbb", "tag_name": "人教版"},
+                    {"tag_dimension_id": "zxxcc", "tag_name": "下册"},
+                ],
+                "relations": {
+                    "national_course_resource": [
+                        {
+                            "id": "national-activity-001-video",
+                            "title": "生活中的负数",
+                            "resource_type_code_name": "视频",
+                            "ti_items": [
+                                {
+                                    "ti_format": "m3u8",
+                                    "lc_ti_format": "application/x-mpegURL",
+                                    "ti_file_flag": "href-m3u8",
+                                    "ti_storage": "cs_path:${ref-path}/edu_product/esp/assets/national-activity-001.pkg/video/main.m3u8",
+                                    "custom_properties": {"identification": True},
+                                }
+                            ],
+                        },
+                        {
+                            "id": "national-activity-001-courseware",
+                            "title": "生活中的负数课件",
+                            "resource_type_code_name": "课件",
+                            "ti_items": [
+                                {
+                                    "ti_format": "pdf",
+                                    "lc_ti_format": "pdf",
+                                    "ti_file_flag": "source",
+                                    "ti_storage": "cs_path:${ref-path}/edu_product/esp/assets/national-activity-001.pkg/生活中的负数课件.pdf",
+                                    "custom_properties": {"identification": True},
+                                }
+                            ],
+                        },
+                    ]
+                },
+            },
+        )
+        write_json(
+            sync_classroom_search_json,
+            {
+                "data": {
+                    "items": [
+                        {
+                            "title": "生活中的负数",
+                            "url": "https://basic.smartedu.cn/syncClassroom/classActivity?activityId=national-activity-001",
+                            "catalog": "syncClassroom",
+                            "tab_code": "classActivity",
+                            "contentType": "national_lesson",
+                            "resourceTypeName": "国家课",
+                            "stage": "小学",
+                            "grade": "六年级",
+                            "subject": "数学",
+                        }
+                    ]
+                }
+            },
+        )
+        self.command(
+            "smartedu-resources-sync-classroom-details",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "search-resources",
+                "--query",
+                "六年级数学人教版下册",
+                "--search-response-json",
+                str(sync_classroom_search_json),
+                "--fetch-details",
+                "--detail-dir",
+                str(sync_classroom_detail_dir),
+                "--offline-details-only",
+                "-o",
+                str(sync_classroom_output_json),
+            ],
+        )
+        sync_classroom_data = load_json(sync_classroom_output_json)
+        sync_candidates = sync_classroom_data.get("candidates") or []
+        sync_formats = {item.get("format") for item in sync_candidates}
+        assert_true({"m3u8", "pdf"}.issubset(sync_formats), "同步课堂课程包应展开视频和课件文件项")
+        assert_true(any(item.get("raw", {}).get("detail_page", "").startswith("https://basic.smartedu.cn/syncClassroom/classActivity") for item in sync_candidates), "同步课堂候选应保留课时详情页")
+        assert_true(sync_classroom_data.get("summary", {}).get("details_fetched") == 1, "同步课堂详情应成功展开")
+
+        self.command(
+            "smartedu-resources-sync-classroom-url",
+            [
+                sys.executable,
+                self.script("smartedu-resources", "scripts", "smartedu_resources.py"),
+                "candidates-from-detail",
+                "--url",
+                "https://basic.smartedu.cn/syncClassroom/classActivity?activityId=national-activity-001",
+                "--detail-json",
+                str(sync_classroom_detail_dir / "national-activity-001.json"),
+                "-o",
+                str(sync_classroom_url_output_json),
+            ],
+        )
+        sync_url_data = load_json(sync_classroom_url_output_json)
+        sync_url_candidates = sync_url_data.get("candidates") or []
+        assert_true({"m3u8", "pdf"}.issubset({item.get("format") for item in sync_url_candidates}), "直接详情页 URL 应可展开同步课堂资源")
+        assert_true(any(item.get("raw", {}).get("detail_page", "").startswith("https://basic.smartedu.cn/syncClassroom/classActivity") for item in sync_url_candidates), "直接详情页 URL 应保留同步课堂详情页上下文")
 
         explicit_detail_server_dir.mkdir(parents=True, exist_ok=True)
         explicit_detail_fixture = load_json(sample_detail)
@@ -1111,7 +1367,8 @@ class SmokeRunner:
                     {
                         "option_id": "A",
                         "title": "SmartEdu 分数讲义",
-                        "source_url": "http://127.0.0.1:9/private.pdf",
+                        "source_url": "https://basic.smartedu.cn/resourceCenter/detail?contentType=NDR_NationalLesson&contentId=smartedu-001&catalogType=resourceCenter&subCatalog=course",
+                        "download_url": "http://127.0.0.1:9/private.pdf",
                         "format": "pdf",
                         "resource_type": "文档",
                         "requires_auth": True,
@@ -1171,7 +1428,14 @@ class SmokeRunner:
         probed = load_json(probed_json)
         assert_true(probed.get("probe_only") is True, "probe-only 模式应被标记")
         assert_true(len(probed.get("probed") or []) == 1, "probe-only 应输出探测结果")
-        assert_true(len(probed["probed"][0].get("url_results") or []) == 2, "probe-only 应探测 url_candidates")
+        url_results = probed["probed"][0].get("url_results") or []
+        assert_true(len(url_results) >= 2, "probe-only 应探测 url_candidates")
+        assert_true(url_results[0].get("url") == "http://127.0.0.1:9/private.pdf", "下载探测应优先使用候选下载地址")
+        assert_true(url_results[1].get("url") == "http://127.0.0.1:9/public.pdf", "下载探测应优先使用 url_candidates")
+        assert_true(
+            all("basic.smartedu.cn/resourceCenter/detail" not in item.get("url", "") for item in url_results[:2]),
+            "详情页不应排在下载候选之前探测",
+        )
         assert_true(probed["probed"][0].get("accessible") is False, "不可达测试 URL 应标记不可访问")
         assert_true("test-marker-value" not in probed_json.read_text(encoding="utf-8"), "探测输出不应包含授权 header 原文")
 
@@ -1224,6 +1488,144 @@ class SmokeRunner:
         assert_true(len(attempted.get("failures") or []) == 1, "无可达测试 URL 时应记录失败")
         assert_true("public.pdf" in attempted["failures"][0].get("error", ""), "下载器应尝试 url_candidates")
         assert_true("test-marker-value" not in attempted_json.read_text(encoding="utf-8"), "下载输出不应包含授权 header 原文")
+
+    def test_downloader_m3u8_merge(self) -> None:
+        hls_dir = self.work_dir / "hls-fixture"
+        hls_dir.mkdir(parents=True, exist_ok=True)
+        (hls_dir / "master.m3u8").write_text(
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=640x360\n"
+            "media.m3u8\n",
+            encoding="utf-8",
+        )
+        (hls_dir / "media.m3u8").write_text(
+            "#EXTM3U\n"
+            "#EXT-X-TARGETDURATION:4\n"
+            "#EXTINF:4,\n"
+            "seg1.ts\n"
+            "#EXTINF:4,\n"
+            "seg2.ts\n"
+            "#EXT-X-ENDLIST\n",
+            encoding="utf-8",
+        )
+        (hls_dir / "seg1.ts").write_bytes(b"segment-one")
+        (hls_dir / "seg2.ts").write_bytes(b"segment-two")
+        selection_json = self.work_dir / "m3u8-selection.json"
+        download_json = self.work_dir / "m3u8-download.json"
+        server, thread, base_url = start_static_server(hls_dir)
+        try:
+            write_json(
+                selection_json,
+                {
+                    "selection_schema": "learning-resource-selection/v1",
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "SmartEdu HLS 测试视频",
+                            "source_url": f"{base_url}/master.m3u8",
+                            "format": "m3u8",
+                            "resource_type": "视频",
+                            "downloadable": True,
+                            "candidate": {
+                                "source": "smartedu-resources",
+                                "title": "SmartEdu HLS 测试视频",
+                                "source_url": f"{base_url}/master.m3u8",
+                                "format": "m3u8",
+                                "resource_type": "视频",
+                                "downloadable": True,
+                            },
+                        }
+                    ],
+                },
+            )
+            self.command(
+                "learning-resource-downloader-m3u8-merge",
+                [
+                    sys.executable,
+                    self.script("learning-resource-downloader", "scripts", "download_selected.py"),
+                    str(selection_json),
+                    "--select",
+                    "A",
+                    "--work-dir",
+                    str(self.work_dir / "m3u8-work"),
+                    "-o",
+                    str(download_json),
+                ],
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        downloaded = load_json(download_json)
+        downloaded_files = downloaded.get("downloaded_files") or []
+        assert_true(len(downloaded_files) == 1, "m3u8 应下载 1 个合并文件")
+        merged_file = Path(downloaded_files[0].get("local_file"))
+        assert_true(merged_file.suffix == ".ts", "m3u8 合并输出应使用 ts 后缀")
+        assert_true(merged_file.read_bytes() == b"segment-onesegment-two", "m3u8 分片应按顺序合并")
+
+    def test_downloader_candidate_schema_input(self) -> None:
+        hls_dir = self.work_dir / "candidate-hls-fixture"
+        hls_dir.mkdir(parents=True, exist_ok=True)
+        (hls_dir / "media.m3u8").write_text(
+            "#EXTM3U\n"
+            "#EXT-X-TARGETDURATION:4\n"
+            "#EXTINF:4,\n"
+            "seg1.ts\n"
+            "#EXTINF:4,\n"
+            "seg2.ts\n"
+            "#EXT-X-ENDLIST\n",
+            encoding="utf-8",
+        )
+        (hls_dir / "seg1.ts").write_bytes(b"candidate-one")
+        (hls_dir / "seg2.ts").write_bytes(b"candidate-two")
+        candidates_json = self.work_dir / "candidate-direct-download.json"
+        download_json = self.work_dir / "candidate-direct-download-result.json"
+        server, thread, base_url = start_static_server(hls_dir)
+        try:
+            write_json(
+                candidates_json,
+                {
+                    "candidate_schema": "learning-resource-candidate/v1",
+                    "source_skill": "smartedu-resources",
+                    "candidates": [
+                        {
+                            "source": "smartedu-resources",
+                            "source_name": "国家中小学智慧教育平台",
+                            "source_url": f"{base_url}/media.m3u8",
+                            "resource_id": "smartedu-test-video",
+                            "title": "候选直连测试视频",
+                            "resource_type": "视频",
+                            "format": "m3u8",
+                            "downloadable": True,
+                            "requires_auth": False,
+                            "raw": {"detail_page": "https://basic.smartedu.cn/syncClassroom/classActivity?activityId=test"},
+                        }
+                    ],
+                },
+            )
+            self.command(
+                "learning-resource-downloader-candidate-input",
+                [
+                    sys.executable,
+                    self.script("learning-resource-downloader", "scripts", "download_selected.py"),
+                    str(candidates_json),
+                    "--select",
+                    "A",
+                    "--work-dir",
+                    str(self.work_dir / "candidate-direct-work"),
+                    "-o",
+                    str(download_json),
+                ],
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        downloaded = load_json(download_json)
+        downloaded_files = downloaded.get("downloaded_files") or []
+        assert_true(len(downloaded_files) == 1, "候选 JSON 应可直接下载 1 个文件")
+        merged_file = Path(downloaded_files[0].get("local_file"))
+        assert_true(merged_file.read_bytes() == b"candidate-onecandidate-two", "候选 JSON 直接输入应完成 m3u8 合并")
 
     def test_library_chain(self) -> None:
         downloads_dir = self.work_dir / "downloads"
@@ -1362,8 +1764,11 @@ class SmokeRunner:
 
     def run(self) -> None:
         self.prepare()
+        self.test_learning_resource_intent()
         self.test_web_to_selection()
+        self.test_smartedu_selection_links()
         self.test_source_first_flow()
+        self.test_smartedu_flow_search_to_detail_selection()
         self.test_resource_flow_local_first()
         self.test_resource_flow_download_archive()
         self.test_source_discovery_and_profiler()
@@ -1371,6 +1776,8 @@ class SmokeRunner:
         self.test_smartedu_browser_session_offline()
         self.test_multiformat_analyzer()
         self.test_smartedu_downloader_auth_policy()
+        self.test_downloader_m3u8_merge()
+        self.test_downloader_candidate_schema_input()
         self.test_library_chain()
         print("Smoke tests passed")
         for name, status in self.results:

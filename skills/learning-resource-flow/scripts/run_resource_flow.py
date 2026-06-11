@@ -57,6 +57,28 @@ def run_command(cmd: list[str], cwd: Path) -> None:
         raise SystemExit(result.returncode)
 
 
+def analyze_query_intent(query: str, skills_dir: Path, package_root: Path, work_dir: Path) -> tuple[dict[str, Any], str]:
+    intent_json = work_dir / "intent.json"
+    analyzer = skills_dir / "learning-resource-intent" / "scripts" / "analyze_intent.py"
+    code, payload, error = run_json_command(
+        [
+            sys.executable,
+            str(analyzer),
+            query,
+            "--output-json",
+            str(intent_json),
+        ],
+        package_root,
+    )
+    if not payload and intent_json.exists():
+        payload = load_json(str(intent_json))
+    if code != 0 or not payload:
+        if error:
+            print(error, file=sys.stderr)
+        raise SystemExit(code or 1)
+    return payload, str(intent_json)
+
+
 def first_task(intent: dict[str, Any]) -> dict[str, Any]:
     tasks = intent.get("execution_tasks") or []
     if isinstance(tasks, list) and tasks:
@@ -287,6 +309,11 @@ def smartedu_candidates(
     sources: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     work_files: dict[str, str] = {}
+    task_json = work_dir / "smartedu-task.json"
+    output_json = work_dir / "smartedu-candidates.json"
+    write_json(task_json, {"filters": filters, "intent": intent, "query": query})
+    work_files["smartedu_task"] = str(task_json)
+    work_files["smartedu_candidates"] = str(output_json)
 
     profile_cmd = [
         sys.executable,
@@ -312,6 +339,8 @@ def smartedu_candidates(
             str(args.per_source_limit),
             "--work-dir",
             str(work_dir / "smartedu-textbooks"),
+            "-o",
+            str(output_json),
         ]
         for flag, key in [
             ("--stage", "stage"),
@@ -331,8 +360,12 @@ def smartedu_candidates(
             "search-resources",
             "--query",
             query,
+            "--task-json",
+            str(task_json),
             "--limit",
             str(args.per_source_limit),
+            "-o",
+            str(output_json),
         ]
         for tab in smartedu_tab_codes(intent, index_payload, args.smartedu_tab_limit):
             cmd.extend(["--tab-code", tab])
@@ -344,8 +377,18 @@ def smartedu_candidates(
             cmd.extend(["--detail-dir", args.smartedu_detail_dir])
         if args.smartedu_offline_details_only:
             cmd.append("--offline-details-only")
+        if args.smartedu_browser_state:
+            cmd.extend(["--browser-state", args.smartedu_browser_state])
+        if args.access_token:
+            cmd.extend(["--access-token", args.access_token])
+        if args.cookie:
+            cmd.extend(["--cookie", args.cookie])
+        for header in args.header or []:
+            cmd.extend(["--header", header])
 
     code, payload, error = run_json_command(cmd, package_root)
+    if not payload and output_json.exists():
+        payload = load_json(str(output_json))
     status = "ok" if code == 0 else "no_candidates"
     if payload.get("candidates"):
         candidates.extend(payload["candidates"])
@@ -493,6 +536,8 @@ def run_download_archive_chain(
         download_cmd.extend(["--access-token", args.access_token])
     if args.cookie:
         download_cmd.extend(["--cookie", args.cookie])
+    if args.probe_only and args.smartedu_browser_state:
+        download_cmd.extend(["--browser-state", args.smartedu_browser_state])
 
     download_code, download_payload, download_error = run_json_command(download_cmd, package_root)
     if not download_payload and download_json.exists():
@@ -675,7 +720,8 @@ def post_selection_status(post_selection: dict[str, Any]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run source-first learning resource flow")
-    parser.add_argument("--intent-json", required=True, help="learning-resource-intent/v1 JSON")
+    parser.add_argument("--intent-json", help="learning-resource-intent/v1 JSON")
+    parser.add_argument("--query", help="用户自然语言学习资源需求；未提供 --intent-json 时自动调用 learning-resource-intent")
     parser.add_argument("--work-dir", default=".learning-resource-flow-work/resource-flow", help="工作目录")
     parser.add_argument("--min-source-candidates", type=int, default=3, help="已优化站点候选少于该数量时触发网络搜索分支")
     parser.add_argument("--per-source-limit", type=int, default=8, help="每个已优化 source 最多候选数")
@@ -694,16 +740,17 @@ def main() -> int:
     parser.add_argument("--local-min-score", type=float, default=8.0, help="本地资料库检索最低匹配分")
     parser.add_argument("--local-satisfy-candidates", type=int, default=3, help="本地候选达到该数量时默认不继续外部搜索")
     parser.add_argument("--smartedu-search-response-json", help="离线 SmartEdu 搜索响应 JSON")
-    parser.add_argument("--smartedu-fetch-details", action="store_true", help="SmartEdu 搜索后继续追踪详情")
+    parser.add_argument("--smartedu-fetch-details", action=argparse.BooleanOptionalAction, default=True, help="SmartEdu 搜索后继续追踪详情；默认开启，可用 --no-smartedu-fetch-details 关闭")
     parser.add_argument("--smartedu-detail-dir", help="SmartEdu 详情 JSON 目录")
     parser.add_argument("--smartedu-offline-details-only", action="store_true", help="SmartEdu 详情只从本地目录读取")
+    parser.add_argument("--smartedu-browser-state", help="SmartEdu 搜索/详情阶段可选 Playwright storage state")
     parser.add_argument("--smartedu-site-index-json", help="已生成的 SmartEdu site-index JSON；提供后 flow 直接作为 source registry 使用")
     parser.add_argument("--smartedu-route-map-json", help="SmartEdu route-map JSON；用于生成 site-index")
     parser.add_argument("--smartedu-library-list-json", help="SmartEdu librarylist JSON；用于 site-profile 和 site-index")
     parser.add_argument("--smartedu-route-limit", type=int, default=0, help="生成 SmartEdu site-index 时最多纳入多少 route；0 表示全部")
     parser.add_argument("--smartedu-all-routes", action="store_true", help="生成 SmartEdu site-index 时纳入全部匹配 route")
     parser.add_argument("--smartedu-tab-limit", type=int, default=8, help="从 SmartEdu site-index 中选择多少个搜索 tab")
-    parser.add_argument("--select", help="用户确认下载的候选编号，例如 A,B 或 all；未提供时只输出候选清单")
+    parser.add_argument("--select", help="用户确认下载的候选编号，例如 1,2 或 all；未提供时只输出候选清单")
     parser.add_argument("--library-dir", default="学习资料库", help="最终学习资料库目录")
     parser.add_argument("--index-dir", default=".learning-resource-work/index", help="资料库外部索引目录")
     parser.add_argument("--organize-mode", choices=["copy", "move"], default="copy", help="下载后入库方式")
@@ -720,19 +767,8 @@ def main() -> int:
     parser.add_argument("-o", "--output", help="写入最终 selection JSON")
     args = parser.parse_args()
 
-    intent = load_json(args.intent_json)
-    if intent.get("status") == "needs_clarification":
-        result = {
-            "flow_schema": "learning-resource-flow/v1",
-            "status": "needs_clarification",
-            "clarifying_questions": intent.get("clarifying_questions") or [],
-            "intent": intent,
-        }
-        if args.output:
-            write_json(Path(args.output), result)
-        else:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+    if not args.intent_json and not args.query:
+        parser.error("provide --intent-json or --query")
 
     script_path = Path(__file__).resolve()
     skills_dir = script_path.parents[2]
@@ -741,6 +777,27 @@ def main() -> int:
     if not work_dir.is_absolute():
         work_dir = package_root / work_dir
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    intent_work_file = ""
+    if args.intent_json:
+        intent = load_json(args.intent_json)
+        intent_work_file = args.intent_json
+    else:
+        intent, intent_work_file = analyze_query_intent(args.query or "", skills_dir, package_root, work_dir)
+
+    if intent.get("status") == "needs_clarification":
+        result = {
+            "flow_schema": "learning-resource-flow/v1",
+            "status": "needs_clarification",
+            "clarifying_questions": intent.get("clarifying_questions") or [],
+            "intent": intent,
+            "work_files": {"intent": intent_work_file} if intent_work_file else {},
+        }
+        if args.output:
+            write_json(Path(args.output), result)
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     local_items: list[dict[str, Any]] = []
     local_runs: list[dict[str, Any]] = []
@@ -776,6 +833,7 @@ def main() -> int:
     ranking_json = work_dir / "ranking.json"
     selection_json = Path(args.output) if args.output else work_dir / "selection.json"
     work_files = {
+        "intent": intent_work_file,
         "merged_candidates": str(merged_json),
         "analyzed": str(analyzed_json),
         "ranking": str(ranking_json),

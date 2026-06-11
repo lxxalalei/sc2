@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import string
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,10 +28,7 @@ def load_json(path: str) -> dict[str, Any]:
 
 
 def option_id(index: int) -> str:
-    letters = string.ascii_uppercase
-    if index < len(letters):
-        return letters[index]
-    return f"R{index + 1}"
+    return str(index + 1)
 
 
 def compact_summary(candidate: dict[str, Any], reasons: list[str]) -> str:
@@ -52,16 +48,27 @@ def compact_summary(candidate: dict[str, Any], reasons: list[str]) -> str:
     return "，".join(parts) or "候选资源信息较完整，可作为备选查看"
 
 
+def user_facing_url(candidate: dict[str, Any]) -> str:
+    raw = candidate.get("raw") if isinstance(candidate.get("raw"), dict) else {}
+    if candidate.get("source") == "smartedu-resources":
+        detail_page = raw.get("detail_page")
+        if isinstance(detail_page, str) and detail_page.startswith(("http://", "https://")):
+            return detail_page
+    return candidate.get("source_url")
+
+
 def make_option(item: dict[str, Any], index: int) -> dict[str, Any]:
     candidate = item.get("candidate") or {}
     reasons = [str(value) for value in as_list(item.get("reasons")) if value]
     warnings = [str(value) for value in as_list(item.get("warnings")) if value]
+    display_url = user_facing_url(candidate)
     return {
         "option_id": option_id(index),
         "rank": item.get("rank"),
         "title": candidate.get("title") or "未命名资源",
         "source_name": candidate.get("source_name") or candidate.get("provider") or "",
-        "source_url": candidate.get("source_url"),
+        "source_url": display_url,
+        "download_url": candidate.get("source_url"),
         "resource_id": candidate.get("resource_id"),
         "resource_type": candidate.get("resource_type"),
         "format": candidate.get("format"),
@@ -109,7 +116,7 @@ def render_user_message(options: list[dict[str, Any]], hidden_count: int) -> str
         lines.append("")
         lines.append(f"另有 {hidden_count} 个低质量或风险候选已隐藏。")
     lines.append("")
-    lines.append("请回复要下载的编号，例如 A、B，或回复“重新搜索”。")
+    lines.append("请回复要下载的编号，例如 1、2，或回复“重新搜索”。")
     return "\n".join(lines)
 
 

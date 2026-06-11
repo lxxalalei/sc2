@@ -20,7 +20,7 @@
 
 ```json
 {
-  "option_id": "A",
+  "option_id": "1",
   "rank": 1,
   "title": "",
   "source_name": "",

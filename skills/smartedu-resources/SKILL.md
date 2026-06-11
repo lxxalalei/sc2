@@ -148,6 +148,8 @@ python3 skills/smartedu-resources/scripts/smartedu_resources.py \
   -o smartedu-file-candidates.json
 ```
 
+在完整 Agent 流程中，优先让 `learning-resource-flow` 调用本 skill。flow 会在需求明确后默认执行 SmartEdu 搜索详情展开，并继续串联 analyzer、ranker、selector；本 skill 只负责来源候选，不负责最终排序、用户确认或下载。
+
 归一化已有搜索响应：
 
 ```bash

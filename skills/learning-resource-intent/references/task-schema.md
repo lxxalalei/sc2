@@ -26,6 +26,8 @@
   "source_preferences": [],
   "version": null,
   "volume": null,
+  "request_scope": "candidate_set | full_coverage | exact",
+  "coverage_targets": [],
   "constraints": [],
   "missing_slots": [],
   "clarifying_questions": [],
@@ -45,7 +47,7 @@
 - `topic_resource`：围绕学习主题找资料，例如四则运算、恐龙百科、唐诗启蒙。
 - `local_lookup`：优先查询本地资料库。
 - `broad_exploration`：主题很宽，但用户是“看看/了解/推荐”而非直接下载。
-- `exact_resource`：用户指定了足以定位某个具体资源的名称、来源、版本或格式限制。
+- `exact_resource`：用户指定了 URL、明确资源名称，或提供了足以唯一定位某个具体资源的一组条件。版本、年级、学科本身只是筛选条件，不应单独触发精确资源。
 - `unsupported`：不属于本项目资源范围。
 
 ## execution_tasks
@@ -80,6 +82,25 @@
   - `after_user_selection`：必须先展示候选并让用户确认。
   - `direct_if_exact`：精确资源可以直接下载，但仍应由下载 skill 校验唯一性和来源。
 - `ranking_hints`：给 ranker 的偏好，例如 `authority_weight`、`age_fit_required`、`printable_required`。
+
+## request_scope
+
+`request_scope` 描述用户希望覆盖的范围，不绑定任何具体来源或教材结构：
+
+- `candidate_set`：找一些候选、推荐、先看看，默认值。
+- `full_coverage`：用户说全部、全套、整套、所有、完整、合集、都要或都下载。
+- `exact`：用户给出 URL、明确资源名或唯一定位条件。
+
+`coverage_targets` 用于描述完整覆盖的资源面向，例如：
+
+- `resource_set`：泛指资料/资源/材料。
+- `video`：课程、视频、网课。
+- `courseware`：课件、PPT。
+- `practice`：习题、练习、作业、试卷。
+- `audio`：音频、儿歌、听赏材料。
+- `image_or_article`：图片、图文、绘本、百科文章。
+
+`full_coverage` 不表示可以直接下载所有结果。除非来源、主题和数量都足够清楚，后续流程仍应先搜索、评分、展示覆盖计划或候选清单，再由用户确认。
 
 ## ranking_profile
 

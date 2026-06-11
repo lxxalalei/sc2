@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import base64
 import json
 import mimetypes
 import os
@@ -17,6 +18,28 @@ from pathlib import Path
 from typing import Any
 
 
+def load_local_env() -> None:
+    roots = [Path.cwd(), Path(__file__).resolve().parents[3]]
+    seen: set[Path] = set()
+    for root in roots:
+        env_file = root / ".env.local"
+        if env_file in seen or not env_file.exists():
+            continue
+        seen.add(env_file)
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_local_env()
+
+
 SAFE_EXTENSIONS = {
     "pdf",
     "doc",
@@ -25,6 +48,10 @@ SAFE_EXTENSIONS = {
     "pptx",
     "xls",
     "xlsx",
+    "txt",
+    "json",
+    "srt",
+    "superboard",
     "jpg",
     "jpeg",
     "png",
@@ -39,7 +66,10 @@ SAFE_EXTENSIONS = {
     "zip",
     "html",
     "m3u8",
+    "ts",
 }
+
+OPTION_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 def load_json(path: str) -> dict[str, Any]:
@@ -63,7 +93,55 @@ def parse_selection(value: str, options: list[dict[str, Any]]) -> list[str]:
 
 
 def option_map(options: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {str(option.get("option_id")).upper(): option for option in options if option.get("option_id")}
+    mapped: dict[str, dict[str, Any]] = {}
+    for index, option in enumerate(options):
+        option_value = option.get("option_id")
+        if not option_value:
+            continue
+        key = str(option_value).upper()
+        mapped[key] = option
+        if str(option_value).isdigit() and index < len(OPTION_LETTERS):
+            mapped.setdefault(OPTION_LETTERS[index], option)
+    return mapped
+
+
+def option_id(index: int) -> str:
+    return str(index + 1)
+
+
+def user_facing_url(candidate: dict[str, Any]) -> str:
+    raw = candidate.get("raw") if isinstance(candidate.get("raw"), dict) else {}
+    detail_page = raw.get("detail_page")
+    if isinstance(detail_page, str) and detail_page.startswith(("http://", "https://")):
+        return detail_page
+    return str(candidate.get("source_url") or "")
+
+
+def candidate_to_option(candidate: dict[str, Any], index: int) -> dict[str, Any]:
+    return {
+        "option_id": option_id(index),
+        "title": candidate.get("title") or f"资源 {index + 1}",
+        "source_name": candidate.get("source_name") or candidate.get("provider") or "",
+        "source_url": user_facing_url(candidate),
+        "download_url": candidate.get("source_url"),
+        "resource_id": candidate.get("resource_id"),
+        "resource_type": candidate.get("resource_type"),
+        "format": candidate.get("format"),
+        "downloadable": bool(candidate.get("downloadable")),
+        "requires_auth": bool(candidate.get("requires_auth")),
+        "official": bool(candidate.get("official")),
+        "candidate": candidate,
+    }
+
+
+def input_options(data: dict[str, Any]) -> list[dict[str, Any]]:
+    options = data.get("options")
+    if isinstance(options, list):
+        return options
+    candidates = data.get("candidates")
+    if isinstance(candidates, list):
+        return [candidate_to_option(candidate, index) for index, candidate in enumerate(candidates) if isinstance(candidate, dict)]
+    return []
 
 
 def parse_extra_headers(values: list[str] | None = None) -> dict[str, str]:
@@ -84,15 +162,19 @@ def parse_extra_headers(values: list[str] | None = None) -> dict[str, str]:
 
 
 def build_headers(args: argparse.Namespace) -> dict[str, str]:
-    headers = {"User-Agent": "learning-resource-agent/0.1"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Origin": "https://basic.smartedu.cn",
+        "Referer": "https://basic.smartedu.cn/",
+    }
     authorization = os.environ.get("SMARTEDU_AUTHORIZATION")
     access_token = args.access_token or os.environ.get("SMARTEDU_ACCESS_TOKEN")
     cookie = args.cookie or os.environ.get("SMARTEDU_COOKIE")
+    if access_token and "SMARTEDU_ACCESS_TOKEN" not in os.environ:
+        os.environ["SMARTEDU_ACCESS_TOKEN"] = access_token
     if authorization:
         headers["Authorization"] = authorization
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-        headers["accessToken"] = access_token
     if cookie:
         headers["Cookie"] = cookie
     headers.update(parse_extra_headers(args.header))
@@ -127,6 +209,73 @@ def extension_for(option: dict[str, Any], url: str, content_type: str | None = N
     return "html"
 
 
+def content_kind(content_type: str | None) -> str:
+    value = (content_type or "").split(";", 1)[0].strip().lower()
+    if value in {"application/pdf", "application/x-pdf"}:
+        return "pdf"
+    if value.startswith("image/"):
+        return "image"
+    if value.startswith("video/") or value in {"application/vnd.apple.mpegurl", "application/x-mpegurl"}:
+        return "video"
+    if value in {"text/html", "application/xhtml+xml"}:
+        return "html"
+    if value in {"application/json", "text/json"}:
+        return "json"
+    if value.startswith("text/"):
+        return "text"
+    return ""
+
+
+def sniff_file_kind(path: Path) -> str:
+    try:
+        head = path.read_bytes()[:512]
+    except OSError:
+        return ""
+    stripped = head.lstrip().lower()
+    if head.startswith(b"%PDF-"):
+        return "pdf"
+    if head.startswith(b"\xff\xd8\xff") or head.startswith(b"\x89PNG\r\n\x1a\n") or head.startswith(b"GIF8") or head.startswith(b"RIFF") and b"WEBP" in head[:16]:
+        return "image"
+    if stripped.startswith((b"<!doctype html", b"<html", b"<script", b"<head")):
+        return "html"
+    if stripped.startswith((b"{", b"[")):
+        return "json"
+    return ""
+
+
+def expected_kind(option: dict[str, Any], ext: str) -> str:
+    resource_type = str(option.get("resource_type") or (option.get("candidate") or {}).get("resource_type") or "")
+    if ext == "pdf":
+        return "pdf"
+    if ext in {"jpg", "jpeg", "png", "gif", "webp"}:
+        return "image"
+    if ext in {"mp4", "mov", "avi", "m3u8", "ts"}:
+        return "video"
+    if ext == "json":
+        return "json"
+    if ext in {"txt", "srt", "html"}:
+        return "text" if ext != "html" else "html"
+    if resource_type == "文档":
+        return "pdf" if ext == "pdf" else ""
+    if resource_type == "图片":
+        return "image"
+    if resource_type == "视频":
+        return "video"
+    return ""
+
+
+def validate_downloaded_file(path: Path, option: dict[str, Any], expected_ext: str, content_type: str | None) -> None:
+    expected = expected_kind(option, expected_ext)
+    header_kind = content_kind(content_type)
+    file_kind = sniff_file_kind(path)
+    if expected and header_kind == "html" and expected != "html":
+        raise ValueError(f"响应是 HTML 页面，不是预期的 {expected_ext} 文件")
+    if expected == "pdf" and file_kind != "pdf":
+        raise ValueError("响应内容不是 PDF 文件")
+    if expected == "image" and file_kind and file_kind != "image":
+        raise ValueError("响应内容不是图片文件")
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -139,7 +288,7 @@ def candidate_urls(option: dict[str, Any]) -> list[str]:
     candidate = option.get("candidate") or {}
     raw = candidate.get("raw") if isinstance(candidate.get("raw"), dict) else {}
     urls: list[str] = []
-    for url in [option.get("source_url"), candidate.get("source_url"), *(raw.get("url_candidates") or [])]:
+    for url in [candidate.get("source_url"), *(raw.get("url_candidates") or []), option.get("download_url"), option.get("source_url")]:
         if isinstance(url, str) and url and url not in urls:
             urls.append(url)
     return urls
@@ -165,13 +314,45 @@ def request_headers(headers: dict[str, str], extra: dict[str, str] | None = None
     return merged
 
 
+def smartedu_access_token() -> str:
+    return os.environ.get("SMARTEDU_ACCESS_TOKEN") or ""
+
+
+def should_append_access_token(url: str) -> bool:
+    host = urllib.parse.urlparse(url).netloc.lower()
+    return any(
+        marker in host
+        for marker in [
+            "ykt.cbern.com.cn",
+            "ykt.eduyun.cn",
+            "smartedu.cn",
+        ]
+    )
+
+
+def append_access_token(url: str) -> str:
+    token = smartedu_access_token()
+    if not token or not should_append_access_token(url):
+        return url
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key == "accessToken" for key, _value in query):
+        return url
+    query.append(("accessToken", token))
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def request_url(url: str) -> str:
+    return append_access_token(url)
+
+
 def probe_url(url: str, timeout: int, headers: dict[str, str]) -> dict[str, Any]:
     parsed = urllib.parse.urlparse(str(url))
     if parsed.scheme not in {"http", "https"}:
         return {"url": str(url), "ok": False, "error": "只支持 http/https 探测"}
     for method, extra in [("HEAD", {}), ("GET", {"Range": "bytes=0-0"})]:
         try:
-            request = urllib.request.Request(str(url), method=method, headers=request_headers(headers, extra))
+            request = urllib.request.Request(request_url(str(url)), method=method, headers=request_headers(headers, extra))
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return {
                     "url": str(url),
@@ -255,7 +436,7 @@ def probe_option(option: dict[str, Any], timeout: int, headers: dict[str, str], 
 
 
 def download_url(url: str, dest: Path, timeout: int, max_bytes: int, headers: dict[str, str]) -> tuple[int, str | None]:
-    request = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(request_url(url), headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         content_type = response.headers.get("Content-Type")
         total = 0
@@ -269,6 +450,159 @@ def download_url(url: str, dest: Path, timeout: int, max_bytes: int, headers: di
                     raise ValueError(f"文件超过大小限制 {max_bytes} bytes")
                 fh.write(chunk)
     return total, content_type
+
+
+def read_url_bytes(url: str, timeout: int, headers: dict[str, str]) -> tuple[bytes, str | None]:
+    request = urllib.request.Request(request_url(url), headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read(), response.headers.get("Content-Type")
+
+
+def m3u8_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def choose_media_playlist_url(playlist_url: str, text: str) -> str:
+    if not text.lstrip().startswith("#EXTM3U"):
+        raise ValueError("响应不是 m3u8 播放列表")
+    lines = m3u8_lines(text)
+    for index, line in enumerate(lines):
+        if line.startswith("#EXT-X-STREAM-INF"):
+            for candidate in lines[index + 1 :]:
+                if not candidate.startswith("#"):
+                    return urllib.parse.urljoin(playlist_url, candidate)
+    return playlist_url
+
+
+def parse_m3u8_attributes(value: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    current = ""
+    in_quote = False
+    parts: list[str] = []
+    for char in value:
+        if char == '"':
+            in_quote = not in_quote
+        if char == "," and not in_quote:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    if current:
+        parts.append(current)
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, attr_value = part.split("=", 1)
+        attrs[key.strip().upper()] = attr_value.strip().strip('"')
+    return attrs
+
+
+def media_key(playlist_url: str, lines: list[str]) -> dict[str, str] | None:
+    key_line = next((line for line in lines if line.startswith("#EXT-X-KEY:")), None)
+    if not key_line:
+        return None
+    attrs = parse_m3u8_attributes(key_line.split(":", 1)[1])
+    method = attrs.get("METHOD", "").upper()
+    if method == "NONE":
+        return None
+    if method != "AES-128":
+        raise ValueError(f"暂不支持加密 m3u8 方法: {method or 'unknown'}")
+    uri = attrs.get("URI")
+    if not uri:
+        raise ValueError("加密 m3u8 缺少 key URI")
+    iv = attrs.get("IV") or "0x00000000000000000000000000000000"
+    return {"method": method, "uri": urllib.parse.urljoin(playlist_url, uri), "iv": iv.removeprefix("0x").removeprefix("0X")}
+
+
+def media_segment_urls(playlist_url: str, text: str) -> tuple[list[str], dict[str, str] | None]:
+    if not text.lstrip().startswith("#EXTM3U"):
+        raise ValueError("响应不是 m3u8 播放列表")
+    lines = m3u8_lines(text)
+    key = media_key(playlist_url, lines)
+    segments = [urllib.parse.urljoin(playlist_url, line) for line in lines if not line.startswith("#")]
+    if not segments:
+        raise ValueError("m3u8 中未找到媒体分片")
+    return segments, key
+
+
+def decrypt_aes128_segment(segment: bytes, key: bytes, iv_hex: str) -> bytes:
+    if len(key) != 16:
+        raise ValueError(f"AES-128 key 长度异常: {len(key)} bytes")
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", iv_hex or ""):
+        raise ValueError("AES-128 IV 格式异常")
+    completed = subprocess.run(
+        ["openssl", "enc", "-d", "-aes-128-cbc", "-K", key.hex(), "-iv", iv_hex],
+        input=segment,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        error = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"AES-128 分片解密失败: {error or completed.returncode}")
+    return completed.stdout
+
+
+def decrypt_aes_ecb(data: bytes, key: bytes) -> bytes:
+    completed = subprocess.run(
+        ["openssl", "enc", "-d", "-aes-128-ecb", "-K", key.hex()],
+        input=data,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        error = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"AES-ECB key 解密失败: {error or completed.returncode}")
+    return completed.stdout
+
+
+def fetch_json(url: str, timeout: int, headers: dict[str, str]) -> dict[str, Any]:
+    data, _content_type = read_url_bytes(url, timeout, headers)
+    parsed = json.loads(data.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError("响应 JSON 不是对象")
+    return parsed
+
+
+def fetch_hls_decryption_key(key_info: dict[str, str], timeout: int, headers: dict[str, str]) -> bytes:
+    key_url = key_info["uri"]
+    key_id = key_url.rstrip("/").rsplit("/", 1)[-1]
+    nonce_payload = fetch_json(f"{key_url}/signs", timeout, headers)
+    nonce = str(nonce_payload.get("nonce") or "")
+    if not nonce:
+        raise ValueError("视频 key signs 响应缺少 nonce")
+    sign = hashlib.md5((nonce + key_id).encode("utf-8")).hexdigest()[:16]
+    key_payload = fetch_json(f"{key_url}?{urllib.parse.urlencode({'nonce': nonce, 'sign': sign})}", timeout, headers)
+    encrypted_key = str(key_payload.get("key") or "")
+    if not encrypted_key:
+        raise ValueError("视频 key 响应缺少 key")
+    key_text = base64.b64decode(encrypted_key)
+    decryption_key = decrypt_aes_ecb(key_text, sign.encode("utf-8"))
+    if len(decryption_key) != 16:
+        raise ValueError(f"视频解密 key 长度异常: {len(decryption_key)} bytes")
+    return decryption_key
+
+
+def download_m3u8(url: str, dest: Path, timeout: int, max_bytes: int, headers: dict[str, str]) -> tuple[int, str | None]:
+    playlist_bytes, content_type = read_url_bytes(url, timeout, headers)
+    playlist_text = playlist_bytes.decode("utf-8-sig")
+    media_url = choose_media_playlist_url(url, playlist_text)
+    if media_url != url:
+        playlist_bytes, content_type = read_url_bytes(media_url, timeout, headers)
+        playlist_text = playlist_bytes.decode("utf-8-sig")
+
+    segments, key_info = media_segment_urls(media_url, playlist_text)
+    key_bytes = None
+    if key_info:
+        key_bytes = fetch_hls_decryption_key(key_info, timeout, headers)
+    total = 0
+    with dest.open("wb") as fh:
+        for segment_url in segments:
+            segment, _segment_type = read_url_bytes(segment_url, timeout, headers)
+            if key_info and key_bytes is not None:
+                segment = decrypt_aes128_segment(segment, key_bytes, key_info["iv"])
+            total += len(segment)
+            if total > max_bytes:
+                raise ValueError(f"文件超过大小限制 {max_bytes} bytes")
+            fh.write(segment)
+    return total, content_type or "application/vnd.apple.mpegurl"
 
 
 def download_option(option: dict[str, Any], downloads_dir: Path, timeout: int, max_bytes: int, headers: dict[str, str]) -> dict[str, Any]:
@@ -292,11 +626,18 @@ def download_option(option: dict[str, Any], downloads_dir: Path, timeout: int, m
             errors.append(f"{url}: 只支持 http/https 下载")
             continue
         ext = extension_for(option, str(url))
-        attempt_dest = downloads_dir / f"{title}_{resource_id}.{ext}"
+        is_m3u8 = ext == "m3u8" or str(url).lower().split("?", 1)[0].endswith(".m3u8")
+        output_ext = "ts" if is_m3u8 else ext
+        attempt_dest = downloads_dir / f"{title}_{resource_id}.{output_ext}"
         try:
-            size, content_type = download_url(str(url), attempt_dest, timeout, max_bytes, headers)
-            final_ext = extension_for(option, str(url), content_type)
-            if final_ext != ext:
+            if is_m3u8:
+                size, content_type = download_m3u8(str(url), attempt_dest, timeout, max_bytes, headers)
+                final_ext = "ts"
+            else:
+                size, content_type = download_url(str(url), attempt_dest, timeout, max_bytes, headers)
+                final_ext = extension_for(option, str(url), content_type)
+                validate_downloaded_file(attempt_dest, option, output_ext, content_type)
+            if final_ext != output_ext:
                 final_dest = attempt_dest.with_suffix(f".{final_ext}")
                 attempt_dest.rename(final_dest)
                 attempt_dest = final_dest
@@ -325,9 +666,9 @@ def download_option(option: dict[str, Any], downloads_dir: Path, timeout: int, m
 
 def run(args: argparse.Namespace) -> int:
     data = load_json(args.input)
-    options = data.get("options") or []
+    options = input_options(data)
     if not isinstance(options, list):
-        print("error: options must be a list", file=sys.stderr)
+        print("error: input must contain options or candidates list", file=sys.stderr)
         return 2
 
     selected_ids = parse_selection(args.select, options)
@@ -409,8 +750,8 @@ def run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download selected learning resources into work cache")
-    parser.add_argument("input", help="Selection JSON file, or '-' for stdin")
-    parser.add_argument("--select", required=True, help="Option ids, e.g. A,B or all")
+    parser.add_argument("input", help="Selection JSON or candidate JSON file, or '-' for stdin")
+    parser.add_argument("--select", required=True, help="Option ids, e.g. 1,2 or all")
     parser.add_argument("--work-dir", default=".learning-resource-work", help="Work cache directory")
     parser.add_argument("-o", "--output", help="Write download JSON to this file")
     parser.add_argument("--timeout", type=int, default=20, help="HTTP timeout seconds")

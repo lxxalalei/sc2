@@ -20,6 +20,28 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+def load_local_env() -> None:
+    roots = [Path.cwd(), Path(__file__).resolve().parents[3]]
+    seen: set[Path] = set()
+    for root in roots:
+        env_file = root / ".env.local"
+        if env_file in seen or not env_file.exists():
+            continue
+        seen.add(env_file)
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_local_env()
+
+
 LIBRARY_LIST_URL = "https://api.ykt.cbern.com.cn/zxx/api_static/data/6_6_6/librarylist.json"
 SEARCH_URLS = (
     "https://x-search.ykt.eduyun.cn/v1/resources/combine/search",
@@ -31,6 +53,7 @@ DETAIL_URLS = (
     "https://s-file-2.ykt.cbern.com.cn/zxx/ndrv2/resources/{catalog}/details/{id}.json",
 )
 DETAIL_ENDPOINT_FAMILY = "s-file-ndrv2-details"
+SMARTEDU_FILE_SERVERS = ("s-file-1", "s-file-2", "s-file-3")
 DETAIL_PAGE = (
     "https://basic.smartedu.cn/{catalog}/detail?"
     "contentType={content_type}&contentId={id}&catalogType={catalog}&subCatalog={sub_catalog}"
@@ -90,7 +113,7 @@ DEFAULT_TAB_CODES = [
     "school-space-res",
     "questions_ai_answer",
 ]
-RESOURCE_EXTENSIONS = {"pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "jpg", "jpeg", "png", "webp", "gif", "mp3", "wav", "m4a", "mp4", "mov", "m3u8", "zip", "rar", "7z"}
+RESOURCE_EXTENSIONS = {"pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "json", "srt", "superboard", "jpg", "jpeg", "png", "webp", "gif", "mp3", "wav", "m4a", "mp4", "mov", "m3u8", "zip", "rar", "7z"}
 SMARTEDU_API_TERMS = ["api", "resources", "resource", "librarylist", "details", "search", "aggregate", "combine", "ndrv2", "catalog", "course", "lesson", "content"]
 CATALOG_TAB_HINTS = {
     "qualityCourse": "qualityCourse",
@@ -150,8 +173,8 @@ def parse_extra_headers(values: list[str] | None = None) -> dict[str, str]:
 def build_headers(access_token: str | None = None, cookie: str | None = None, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
     extra_headers = extra_headers or {}
     headers = {
-        "User-Agent": "Mozilla/5.0 smartedu-resources/0.1",
-        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
         "Origin": "https://basic.smartedu.cn",
         "Referer": "https://basic.smartedu.cn/",
         "sdp-app-id": os.environ.get("SMARTEDU_SDP_APP_ID", DEFAULT_SDP_APP_ID),
@@ -160,9 +183,6 @@ def build_headers(access_token: str | None = None, cookie: str | None = None, ex
     cookie = cookie or os.environ.get("SMARTEDU_COOKIE")
     if authorization:
         headers["Authorization"] = authorization
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-        headers["accessToken"] = access_token
     if cookie:
         headers["Cookie"] = cookie
     headers.update(extra_headers)
@@ -302,6 +322,10 @@ def resource_extension(url: str) -> str:
 def safe_detail_page(detail: dict[str, Any], catalog: str, sub_catalog: str) -> str:
     resource_id = norm(detail.get("id"))
     content_type = norm(detail.get("resource_type_code")) or "resource"
+    if catalog == "syncClassroom" and content_type == "national_lesson":
+        return f"https://basic.smartedu.cn/syncClassroom/classActivity?activityId={urllib.parse.quote(resource_id)}"
+    if catalog == "qualityCourse" and content_type == "elite_lesson":
+        return f"https://basic.smartedu.cn/qualityCourse?courseId={urllib.parse.quote(resource_id)}"
     return DETAIL_PAGE.format(
         catalog=urllib.parse.quote(catalog or "syncClassroom"),
         content_type=urllib.parse.quote(content_type),
@@ -391,6 +415,12 @@ def resource_type_for(fmt: str, item: dict[str, Any], detail: dict[str, Any]) ->
         return "图片"
     if fmt in {"pdf", "doc", "docx", "txt", "xls", "xlsx"}:
         return "文档"
+    if fmt in {"srt", "vtt"}:
+        return "字幕"
+    if fmt == "json":
+        return "数据"
+    if fmt == "superboard":
+        return "白板"
     if fmt in {"zip", "rar", "7z"}:
         return "压缩包"
     if fmt in {"m3u8", "mp4", "mov", "avi", "webm"}:
@@ -444,6 +474,21 @@ def parse_tab_codes(values: list[str] | None) -> list[str]:
 
 def search_payload(args: argparse.Namespace, filters: dict[str, Any]) -> dict[str, Any]:
     query = args.query or norm(filters.get("query") or filters.get("core_topic") or filters.get("subject"))
+    # 把 intent / task-json 的结构化字段映射为 SmartEdu tag 维度筛选
+    tag_dimension_map = {
+        "version": "tag.zxxbb",
+        "grade": "tag.zxxnj",
+        "volume": "tag.zxxcc",
+        "subject": "tag.zxxxk",
+        "stage": "tag.zxxxd",
+    }
+    combine_resources: list[dict[str, str]] = []
+    for field, tag_field in tag_dimension_map.items():
+        value = norm(filters.get(field))
+        if value:
+            # 年级数字转中文：1 -> 一年级, 3 -> 三年级
+            value = grade_to_chinese(value)
+            combine_resources.append({"field": tag_field, "value": value})
     return {
         "identity": args.identity,
         "identity_code": args.identity_code,
@@ -455,8 +500,19 @@ def search_payload(args: argparse.Namespace, filters: dict[str, Any]) -> dict[st
         "offset": args.offset,
         "limit": args.limit,
         "combine_intentions": [],
-        "combine_resources": [],
+        "combine_resources": combine_resources,
     }
+
+
+def grade_to_chinese(value: str) -> str:
+    """将年级数字转为中文格式：'1' -> '一年级', '3' -> '三年级'。已是中文则原样返回。"""
+    cn_digits = "零一二三四五六七八九十"
+    m = re.match(r"^(\d+)$", value)
+    if m:
+        n = int(m.group(1))
+        if 0 <= n <= 12:
+            return cn_digits[n] + "年级"
+    return value
 
 
 def candidate_lists(data: Any) -> list[list[dict[str, Any]]]:
@@ -529,6 +585,81 @@ def search_tags_by_dimension(item: dict[str, Any]) -> dict[str, str]:
     return values
 
 
+def filter_search_items_by_tags(items: list[dict[str, Any]], filters: dict[str, Any]) -> list[dict[str, Any]]:
+    """对搜索结果按 tags 做软过滤，保留相关性更高的条目。
+
+    策略：
+    - 版本（version）做硬过滤：用户指定"人教版"但条目标记"北师大版"则丢弃。
+    - 年级和册次做软过滤（排序优先），不硬丢弃：因为同一单元可能在不同年级/册次
+      有同名课程，且搜索关键词可能跨版本匹配。
+    - 没有 tag 信息的条目保留。
+
+    当版本硬过滤导致结果清空时，回退到不过滤版本，由 ranker 处理。
+    """
+    filter_fields = {
+        "version": filters.get("version"),
+        "grade": filters.get("grade"),
+        "volume": filters.get("volume"),
+        "stage": filters.get("stage"),
+    }
+    active_filters = {k: grade_to_chinese(norm(v)) for k, v in filter_fields.items() if v}
+    if not active_filters:
+        return items
+
+    kept: list[dict[str, Any]] = []
+    for item in items:
+        tags = search_tags_by_dimension(item)
+        drop = False
+        for field, expected in active_filters.items():
+            actual = norm(tags.get(field))
+            if not actual:
+                # 条目没有该维度 tag，保留
+                continue
+            if not tag_value_matches(actual, expected):
+                # 只有 version 不匹配时硬过滤，其他维度软过滤（保留）
+                if field == "version":
+                    drop = True
+                    break
+                # grade/volume/stage 不匹配时保留，但不算精确匹配
+        if not drop:
+            kept.append(item)
+
+    # 版本硬过滤导致结果清空时，回退到不做版本过滤，让 ranker 处理
+    if not kept and "version" in active_filters and items:
+        version_value = active_filters["version"]
+        for item in items:
+            tags = search_tags_by_dimension(item)
+            actual = norm(tags.get("version"))
+            if not actual or tag_value_matches(actual, version_value):
+                kept.append(item)
+        # 如果去掉版本过滤还是空，保留全部原始结果
+        if not kept:
+            kept = list(items)
+
+    return kept
+
+
+def tag_value_matches(actual: str, expected: str) -> bool:
+    """宽松匹配 tag 值，处理常见变体如"一年级"/"1年级"/"一年级上"等。"""
+    if actual == expected:
+        return True
+    # 数字与中文数字互转
+    cn_digits = "零一二三四五六七八九十"
+    def normalize_grade(s: str) -> str:
+        s = norm(s)
+        # "1年级" -> "一年级"
+        m = re.match(r"(\d+)\s*年级", s)
+        if m and int(m.group(1)) <= 12:
+            return cn_digits[int(m.group(1))] + "年级"
+        return s
+    if normalize_grade(actual) == normalize_grade(expected):
+        return True
+    # 子串包含："上册" 匹配 "一年级上册" 中的册次
+    if expected in actual or actual in expected:
+        return True
+    return False
+
+
 def search_provider_name(item: dict[str, Any]) -> str:
     extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
     providers = extra.get("providers") if isinstance(extra.get("providers"), list) else []
@@ -544,6 +675,12 @@ def detail_page_from_search_item(item: dict[str, Any]) -> str:
     catalog = norm(first_value(item, ["catalog", "catalog_type", "catalogType", "tab_code", "tabCode", "channel_code", "channelCode"])) or "syncClassroom"
     sub_catalog = norm(first_value(item, ["sub_catalog", "subCatalog", "sub_catalog_code", "subCatalogCode"]))
     content_type = norm(first_value(item, ["content_type", "contentType", "resource_type", "resourceType", "resource_type_code", "resourceTypeCode"])) or "resource"
+    if content_type == "national_lesson":
+        return f"https://basic.smartedu.cn/syncClassroom/classActivity?activityId={urllib.parse.quote(resource_id)}"
+    if content_type == "elite_lesson":
+        return f"https://basic.smartedu.cn/qualityCourse?courseId={urllib.parse.quote(resource_id)}"
+    if content_type == "prepare_lesson":
+        return f"https://basic.smartedu.cn/syncClassroom/prepare/detail?resourceId={urllib.parse.quote(resource_id)}"
     return DETAIL_PAGE.format(
         catalog=urllib.parse.quote(catalog),
         content_type=urllib.parse.quote(content_type),
@@ -590,12 +727,19 @@ def identity_from_detail_page_url(url: str) -> dict[str, str]:
 
     path_parts = [part for part in parsed.path.split("/") if part]
     catalog_from_path = path_parts[0] if path_parts else ""
+    page_type = path_parts[1] if len(path_parts) > 1 else ""
+    resource_id = query_value("contentId", "content_id", "resourceId", "resource_id", "activityId", "activity_id", "courseId", "course_id", "id")
+    content_type = query_value("contentType", "content_type", "resourceType", "resource_type")
+    if catalog_from_path == "syncClassroom" and page_type == "classActivity" and not content_type:
+        content_type = "national_lesson"
+    if catalog_from_path == "qualityCourse" and not content_type:
+        content_type = "elite_lesson"
     return {
-        "resource_id": query_value("contentId", "content_id", "resourceId", "resource_id", "id"),
+        "resource_id": resource_id,
         "tab_code": query_value("tabCode", "tab_code", "catalogType", "catalog") or catalog_from_path,
         "catalog": query_value("catalogType", "catalog") or catalog_from_path,
         "sub_catalog": query_value("subCatalog", "sub_catalog"),
-        "content_type": query_value("contentType", "content_type", "resourceType", "resource_type"),
+        "content_type": content_type,
     }
 
 
@@ -642,12 +786,22 @@ def search_item_identity(item: dict[str, Any]) -> dict[str, str]:
     page_identity = identity_from_detail_page_url(detail_page_from_search_item(item))
     catalog = norm(first_value(item, ["catalog", "catalog_type", "catalogType", "tab_code", "tabCode", "channel_code", "channelCode"])) or page_identity.get("catalog") or "syncClassroom"
     resource_type = norm(first_value(item, ["resource_type", "resourceType", "resource_type_code", "resourceTypeCode", "content_type", "contentType"]))
+    content_type = norm(first_value(item, ["content_type", "contentType"])) or resource_type or page_identity.get("content_type", "")
+    if resource_type == "national_lesson":
+        catalog = "syncClassroom"
+        content_type = "national_lesson"
+    elif resource_type == "elite_lesson":
+        catalog = "qualityCourse"
+        content_type = "elite_lesson"
+    elif resource_type == "prepare_lesson":
+        catalog = "prepareLesson"
+        content_type = "prepare_lesson"
     return {
         "resource_id": norm(first_value(item, ["id", "resource_id", "resourceId", "content_id", "contentId", "course_id", "courseId"])) or page_identity.get("resource_id", ""),
         "tab_code": norm(first_value(item, ["tab_code", "tabCode", "channel_code", "channelCode"])) or page_identity.get("tab_code", "") or catalog,
         "catalog": catalog,
         "sub_catalog": norm(first_value(item, ["sub_catalog", "subCatalog", "sub_catalog_code", "subCatalogCode"])) or page_identity.get("sub_catalog", ""),
-        "content_type": norm(first_value(item, ["content_type", "contentType"])) or resource_type or page_identity.get("content_type", ""),
+        "content_type": content_type,
         "resource_type": resource_type,
         "resource_type_name": clean_html_text(first_value(item, ["resource_type_name", "resourceTypeName", "content_type_name", "contentTypeName"])),
     }
@@ -656,11 +810,40 @@ def search_item_identity(item: dict[str, Any]) -> dict[str, str]:
 def detail_urls_for_identity(identity: dict[str, str]) -> list[dict[str, str]]:
     resource_id = identity.get("resource_id") or ""
     catalog = identity.get("catalog") or "syncClassroom"
+    tab_code = identity.get("tab_code") or catalog
+    content_type = identity.get("content_type") or identity.get("resource_type") or ""
     if not resource_id:
         return []
     urls: list[dict[str, str]] = []
+    special_templates: list[tuple[str, str]] = []
+    if catalog == "syncClassroom" or tab_code in {"syncClassroom", "classActivity"} or content_type == "national_lesson":
+        special_templates.append(("s-file-ndrv2-national-lesson-detail", "https://{server}.ykt.cbern.com.cn/zxx/ndrv2/national_lesson/resources/details/{id}.json"))
+    if catalog in {"prepareLesson", "prepare_lesson"} or tab_code in {"prepareLesson", "prepare_lesson"} or content_type == "prepare_lesson":
+        special_templates.append(("s-file-ndrv2-prepare-sub-type-detail", "https://{server}.ykt.cbern.com.cn/zxx/ndrv2/prepare_sub_type/resources/details/{id}.json"))
+    if catalog == "qualityCourse" or tab_code == "qualityCourse" or content_type == "elite_lesson":
+        special_templates.append(("s-file-ndrv2-quality-course-detail", "https://{server}.ykt.cbern.com.cn/zxx/ndrv2/resources/{id}.json"))
+    if catalog == "tchMaterial" or tab_code == "tchMaterial":
+        special_templates.append(("s-file-ndrv2-tch-material-detail", "https://{server}.ykt.cbern.com.cn/zxx/ndrv2/resources/tch_material/details/{id}.json"))
+
+    seen: set[str] = set()
+    for family, template in special_templates:
+        for index, server in enumerate(SMARTEDU_FILE_SERVERS, 1):
+            url = template.format(server=server, id=urllib.parse.quote(resource_id))
+            if url in seen:
+                continue
+            seen.add(url)
+            urls.append(
+                {
+                    "url": url,
+                    "endpoint_family": family,
+                    "template_index": f"special-{index}",
+                }
+            )
     for index, template in enumerate(DETAIL_URLS, 1):
         url = template.format(catalog=urllib.parse.quote(catalog), id=urllib.parse.quote(resource_id))
+        if url in seen:
+            continue
+        seen.add(url)
         urls.append(
             {
                 "url": url,
@@ -669,6 +852,70 @@ def detail_urls_for_identity(identity: dict[str, str]) -> list[dict[str, str]]:
             }
         )
     return urls
+
+
+def values_from_candidates(candidates: list[dict[str, Any]], field: str) -> list[str]:
+    return [norm(candidate.get(field)) for candidate in candidates if norm(candidate.get(field))]
+
+
+def search_model_context(items: list[dict[str, Any]], candidates: list[dict[str, Any]], query: str, filters: dict[str, Any]) -> dict[str, Any]:
+    dimensions = {
+        "stage": count_values(values_from_candidates(candidates, "stage")),
+        "grade": count_values(values_from_candidates(candidates, "grade")),
+        "subject": count_values(values_from_candidates(candidates, "subject")),
+        "version": count_values(values_from_candidates(candidates, "version")),
+        "volume": count_values(values_from_candidates(candidates, "volume")),
+        "resource_type": count_values(values_from_candidates(candidates, "resource_type")),
+        "format": count_values(values_from_candidates(candidates, "format")),
+        "provider": count_values(values_from_candidates(candidates, "provider")),
+    }
+    ambiguity: list[dict[str, Any]] = []
+    for field in ["grade", "subject", "version", "volume", "resource_type", "provider"]:
+        values = dimensions.get(field) or {}
+        specified = norm(filters.get(field))
+        if len(values) > 1 and not specified:
+            ambiguity.append({"field": field, "values": values})
+
+    detail_options: list[dict[str, Any]] = []
+    for index, item in enumerate(items[:12], 1):
+        identity = search_item_identity(item)
+        detail_url = detail_page_from_search_item(item)
+        title = clean_html_text(first_value(item, ["title", "name", "content_name", "contentName", "resource_name", "resourceName", "global_title"])) or "SmartEdu 资源"
+        tag_values = search_tags_by_dimension(item)
+        detail_options.append(
+            {
+                "rank": index,
+                "title": title,
+                "detail_page": detail_url,
+                "resource_id": identity.get("resource_id"),
+                "tab_code": identity.get("tab_code"),
+                "catalog": identity.get("catalog"),
+                "content_type": identity.get("content_type"),
+                "resource_type": identity.get("resource_type") or identity.get("resource_type_name"),
+                "stage": tag_values.get("stage"),
+                "grade": tag_values.get("grade"),
+                "subject": tag_values.get("subject"),
+                "version": tag_values.get("version"),
+                "volume": tag_values.get("volume"),
+                "provider": search_provider_name(item),
+                "next_command": f"candidates-from-detail --url {json.dumps(detail_url, ensure_ascii=False)}",
+            }
+        )
+
+    return {
+        "purpose": "给模型做需求澄清、范围判断和下一步工具调用决策；脚本不替模型硬编码上册/下册/版本选择。",
+        "query": query,
+        "detected_dimensions": dimensions,
+        "ambiguity": ambiguity,
+        "coverage_hint": "用户表达全部/整套/完整覆盖时，模型应按课程包、资源类型、主题范围和来源维度聚合；测试取样时可选择最相关详情页。",
+        "detail_options": detail_options,
+        "suggested_model_actions": [
+            "需求范围不明确时优先追问学习主题、资源类型、使用场景或覆盖范围",
+            "只有用户明确要求指定教材或唯一定位资源时，才追问版本、出版社或册次",
+            "用户要求完整覆盖时不要只取第一条，应按课程包、resource_type、主题范围和来源分组后批量展开详情",
+            "测试取样时可选 detail_options[0] 继续 candidates-from-detail",
+        ],
+    }
 
 
 def detail_url_attempts_for_search_item(item: dict[str, Any], identity: dict[str, str]) -> list[dict[str, str]]:
@@ -1074,6 +1321,10 @@ def detail_for_search_item(
 
 def candidate_title(detail: dict[str, Any], item: dict[str, Any], fmt: str) -> str:
     title = norm(detail.get("title") or detail.get("global_title"))
+    custom = detail.get("custom_properties") if isinstance(detail.get("custom_properties"), dict) else {}
+    original_title = norm(custom.get("original_title") or custom.get("alias_name"))
+    if original_title and original_title not in title:
+        title = f"{title} - {original_title}" if title else original_title
     flag = norm(item.get("ti_file_flag"))
     if flag and flag not in {"source", "href", "href-m3u8"}:
         return f"{title} - {flag}"
@@ -1082,66 +1333,109 @@ def candidate_title(detail: dict[str, Any], item: dict[str, Any], fmt: str) -> s
     return title or norm(detail.get("id")) or "SmartEdu 资源"
 
 
+def relation_resource_details(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    resources: list[dict[str, Any]] = []
+    if isinstance(detail.get("ti_items"), list):
+        resources.append(detail)
+
+    relations = detail.get("relations") if isinstance(detail.get("relations"), dict) else {}
+    relation_keys = [
+        "national_course_resource",
+        "course_resource",
+        "resources",
+        "resource",
+    ]
+    for key in relation_keys:
+        rows = relations.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("ti_items"), list):
+                continue
+            merged = dict(detail)
+            merged.update(row)
+            if not merged.get("provider_list") and detail.get("provider_list"):
+                merged["provider_list"] = detail.get("provider_list")
+            if not merged.get("tag_list") and detail.get("tag_list"):
+                merged["tag_list"] = detail.get("tag_list")
+            resources.append(merged)
+
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for resource in resources:
+        key = norm(resource.get("id")) or stable_id(json.dumps(resource.get("ti_items") or [], ensure_ascii=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(resource)
+    return unique
+
+
 def candidates_from_detail(detail: dict[str, Any], catalog: str, sub_catalog: str, filters: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], int, int]:
     filters = filters or {}
-    dimensions = tags_by_dimension(detail)
     candidates: list[dict[str, Any]] = []
     skipped = 0
-    detail_page = safe_detail_page(detail, catalog or norm(detail.get("catalog")), sub_catalog)
-    provider = provider_name(detail)
-    items = detail.get("ti_items") or []
-    for index, item in enumerate(items, 1):
-        if not isinstance(item, dict):
-            skipped += 1
-            continue
-        urls = storage_urls(item)
-        if not urls:
-            skipped += 1
-            continue
-        primary_url = urls[0]
-        fmt = normalized_format(item, primary_url)
-        if fmt in {"folder", "unknown"} and not item.get("lc_ti_format"):
-            skipped += 1
-            continue
-        requires_auth = item_requires_auth(item, urls)
-        warnings = ["可能需要 SmartEdu 登录授权"] if requires_auth else []
-        resource_type = resource_type_for(fmt, item, detail)
-        candidate = {
-            "source": "smartedu-resources",
-            "source_name": "国家中小学智慧教育平台",
-            "source_url": primary_url,
-            "resource_id": f"{norm(detail.get('id'))}:{index}:{stable_id(primary_url)}",
-            "title": candidate_title(detail, item, fmt),
-            "description": norm(detail.get("description") or detail.get("global_description")),
-            "resource_type": resource_type,
-            "format": fmt,
-            "stage": dimensions.get("stage") or filters.get("stage"),
-            "grade": dimensions.get("grade") or filters.get("grade"),
-            "subject": dimensions.get("subject") or filters.get("subject"),
-            "learning_domain": dimensions.get("subject") or filters.get("learning_domain"),
-            "version": dimensions.get("version") or filters.get("version"),
-            "volume": dimensions.get("volume") or filters.get("volume"),
-            "topic": filters.get("core_topic") or filters.get("topic"),
-            "provider": provider,
-            "official": True,
-            "downloadable": fmt not in {"folder", "unknown"},
-            "requires_auth": requires_auth,
-            "size": requirement_value(item, "FileSize"),
-            "metadata_confidence": 0.0,
-            "raw": {
-                "detail_page": detail_page,
-                "smartedu_detail_id": detail.get("id"),
-                "smartedu_catalog": catalog,
-                "smartedu_sub_catalog": sub_catalog,
-                "smartedu_item_index": index,
-                "smartedu_item": item,
-                "url_candidates": urls,
-                "warnings": warnings,
-            },
-        }
-        candidate["metadata_confidence"] = metadata_confidence(candidate)
-        candidates.append(candidate)
-    return candidates, len(items), skipped
+    total_items = 0
+    for resource_detail in relation_resource_details(detail):
+        dimensions = tags_by_dimension(resource_detail) or tags_by_dimension(detail)
+        detail_page = safe_detail_page(resource_detail, catalog or norm(resource_detail.get("catalog")), sub_catalog)
+        provider = provider_name(resource_detail)
+        items = resource_detail.get("ti_items") or []
+        total_items += len(items)
+        for index, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            urls = storage_urls(item)
+            if not urls:
+                skipped += 1
+                continue
+            primary_url = urls[0]
+            fmt = normalized_format(item, primary_url)
+            if fmt in {"folder", "unknown"}:
+                skipped += 1
+                continue
+            requires_auth = item_requires_auth(item, urls)
+            warnings = ["可能需要 SmartEdu 登录授权"] if requires_auth else []
+            resource_type = resource_type_for(fmt, item, resource_detail)
+            smartedu_detail_id = norm(resource_detail.get("id") or detail.get("id"))
+            candidate = {
+                "source": "smartedu-resources",
+                "source_name": "国家中小学智慧教育平台",
+                "source_url": primary_url,
+                "resource_id": f"{smartedu_detail_id}:{index}:{stable_id(primary_url)}",
+                "title": candidate_title(resource_detail, item, fmt),
+                "description": norm(resource_detail.get("description") or resource_detail.get("global_description") or detail.get("description") or detail.get("global_description")),
+                "resource_type": resource_type,
+                "format": fmt,
+                "stage": dimensions.get("stage") or filters.get("stage"),
+                "grade": dimensions.get("grade") or filters.get("grade"),
+                "subject": dimensions.get("subject") or filters.get("subject"),
+                "learning_domain": dimensions.get("subject") or filters.get("learning_domain"),
+                "version": dimensions.get("version") or filters.get("version"),
+                "volume": dimensions.get("volume") or filters.get("volume"),
+                "topic": filters.get("core_topic") or filters.get("topic"),
+                "provider": provider,
+                "official": True,
+                "downloadable": fmt not in {"folder", "unknown"},
+                "requires_auth": requires_auth,
+                "size": requirement_value(item, "FileSize") or requirement_value(item, "total_size") or item.get("ti_size"),
+                "metadata_confidence": 0.0,
+                "raw": {
+                    "detail_page": detail_page,
+                    "smartedu_detail_id": smartedu_detail_id,
+                    "smartedu_catalog": catalog,
+                    "smartedu_sub_catalog": sub_catalog,
+                    "smartedu_item_index": index,
+                    "smartedu_item": item,
+                    "smartedu_resource_item": resource_detail,
+                    "url_candidates": urls,
+                    "warnings": warnings,
+                },
+            }
+            candidate["metadata_confidence"] = metadata_confidence(candidate)
+            candidates.append(candidate)
+    return candidates, total_items, skipped
 
 
 def flatten_catalogs(items: list[dict[str, Any]], parent: str = "") -> list[dict[str, Any]]:
@@ -1558,6 +1852,8 @@ def route_scan_result(route: dict[str, Any], args: argparse.Namespace, access_to
     query = scan_query(args, route)
     data, online, endpoint = scan_search_data(args, route, access_token, extra_headers)
     items = extract_search_items(data, args.limit)
+    scan_filters = load_task_filters(getattr(args, "task_json", None))
+    items = filter_search_items_by_tags(items, scan_filters)
     candidates: list[dict[str, Any]] = []
     detail_failures: list[dict[str, str]] = []
     detail_items_seen = 0
@@ -2019,8 +2315,15 @@ def fetch_detail(
     timeout: int = 20,
 ) -> dict[str, Any]:
     errors: list[str] = []
-    for template in DETAIL_URLS:
-        url = template.format(catalog=urllib.parse.quote(catalog), id=urllib.parse.quote(resource_id))
+    identity = {
+        "resource_id": resource_id,
+        "catalog": catalog,
+        "tab_code": catalog,
+        "content_type": "national_lesson" if catalog == "syncClassroom" else "",
+        "resource_type": "",
+    }
+    for attempt in detail_urls_for_identity(identity):
+        url = attempt["url"]
         try:
             return request_json(url, access_token=access_token, cookie=cookie, extra_headers=extra_headers)
         except Exception as exc:
@@ -2031,6 +2334,18 @@ def fetch_detail(
                     return detail
                 errors.append(f"browser_state {url}: status={status} error={error}")
     raise RuntimeError("; ".join(errors))
+
+
+def detail_identity_from_url(url: str) -> dict[str, str]:
+    identity = identity_from_detail_page_url(url)
+    if identity.get("resource_id"):
+        return {
+            "resource_id": identity.get("resource_id", ""),
+            "catalog": identity.get("catalog") or identity.get("tab_code") or "syncClassroom",
+            "sub_catalog": identity.get("sub_catalog", ""),
+            "content_type": identity.get("content_type", ""),
+        }
+    raise ValueError(f"无法从 SmartEdu URL 识别资源 ID: {url}")
 
 
 def load_task_filters(path: str | None) -> dict[str, Any]:
@@ -2046,13 +2361,37 @@ def run_candidates_from_detail(args: argparse.Namespace) -> int:
     extra_headers = parse_extra_headers(args.header)
     access_token = args.access_token or os.environ.get("SMARTEDU_ACCESS_TOKEN")
     details: list[dict[str, Any]] = []
+    detail_contexts: list[dict[str, str]] = []
+    url_context = detail_identity_from_url(args.url) if args.url else None
+    default_context = {
+        "catalog": (url_context or {}).get("catalog") or args.catalog or "syncClassroom",
+        "sub_catalog": (url_context or {}).get("sub_catalog") or args.sub_catalog or "",
+    }
     if args.detail_json:
         for path in args.detail_json:
             data = load_json(path)
             if isinstance(data, list):
-                details.extend(item for item in data if isinstance(item, dict))
+                for item in data:
+                    if isinstance(item, dict):
+                        details.append(item)
+                        detail_contexts.append(default_context)
             elif isinstance(data, dict):
                 details.append(data)
+                detail_contexts.append(default_context)
+    elif args.url:
+        identity = detail_identity_from_url(args.url)
+        details.append(
+            fetch_detail(
+                identity["resource_id"],
+                identity["catalog"],
+                access_token,
+                cookie=args.cookie,
+                extra_headers=extra_headers,
+                browser_state=args.browser_state,
+                timeout=args.timeout,
+            )
+        )
+        detail_contexts.append({"catalog": identity["catalog"], "sub_catalog": identity.get("sub_catalog", "")})
     elif args.resource_id and args.catalog:
         details.append(
             fetch_detail(
@@ -2065,16 +2404,18 @@ def run_candidates_from_detail(args: argparse.Namespace) -> int:
                 timeout=args.timeout,
             )
         )
+        detail_contexts.append({"catalog": args.catalog, "sub_catalog": args.sub_catalog or ""})
     else:
-        print("error: provide --detail-json or both --catalog and --resource-id", file=sys.stderr)
+        print("error: provide --detail-json, --url, or both --catalog and --resource-id", file=sys.stderr)
         return 2
 
     filters = load_task_filters(args.task_json)
     all_candidates: list[dict[str, Any]] = []
     items_seen = 0
     skipped = 0
-    for detail in details[: args.limit]:
-        candidates, seen, failed = candidates_from_detail(detail, args.catalog or "syncClassroom", args.sub_catalog or "", filters)
+    for index, detail in enumerate(details[: args.limit]):
+        context = detail_contexts[index] if index < len(detail_contexts) else {"catalog": args.catalog or "syncClassroom", "sub_catalog": args.sub_catalog or ""}
+        candidates, seen, failed = candidates_from_detail(detail, context["catalog"], context.get("sub_catalog", ""), filters)
         all_candidates.extend(candidates)
         items_seen += seen
         skipped += failed
@@ -2103,14 +2444,29 @@ def fetch_search_results(args: argparse.Namespace, filters: dict[str, Any]) -> A
     extra_headers = parse_extra_headers(args.header)
     access_token = args.access_token or os.environ.get("SMARTEDU_ACCESS_TOKEN")
     payload = search_payload(args, filters)
+    tag_filters = payload.get("combine_resources", [])
     if args.search_url:
         return request_json(args.search_url, access_token=access_token, payload=payload, cookie=args.cookie, extra_headers=extra_headers)
     errors: list[str] = []
+    # 第一步：带 combine_resources tag 筛选搜索
     for url in SEARCH_URLS:
         try:
-            return request_json(url, access_token=access_token, payload=payload, cookie=args.cookie, extra_headers=extra_headers)
+            data = request_json(url, access_token=access_token, payload=payload, cookie=args.cookie, extra_headers=extra_headers)
+            items = extract_search_items(data, args.limit)
+            if items or not tag_filters:
+                return data
+            # 带筛选搜到0条目，降级为无筛选宽搜索，后面由本地硬过滤补位
+            break
         except Exception as exc:
             errors.append(f"{url}: {exc}")
+    # 第二步：去掉 combine_resources 做宽搜索
+    payload_no_filter = dict(payload)
+    payload_no_filter["combine_resources"] = []
+    for url in SEARCH_URLS:
+        try:
+            return request_json(url, access_token=access_token, payload=payload_no_filter, cookie=args.cookie, extra_headers=extra_headers)
+        except Exception as exc:
+            errors.append(f"{url}(no-filter): {exc}")
     raise RuntimeError("; ".join(errors))
 
 
@@ -2124,9 +2480,10 @@ def run_search_resources(args: argparse.Namespace) -> int:
     else:
         data = fetch_search_results(args, filters)
     items = extract_search_items(data, args.limit)
+    items = filter_search_items_by_tags(items, filters)
     candidates: list[dict[str, Any]] = []
     details_fetched = 0
-    detail_failures: list[dict[str, str]] = []
+    detail_failures: list[dict[str, Any]] = []
     detail_items_seen = 0
     detail_items_skipped = 0
     if args.fetch_details:
@@ -2159,6 +2516,7 @@ def run_search_resources(args: argparse.Namespace) -> int:
         "filters": filters,
         "searched_at": datetime.now(timezone.utc).isoformat(),
         "candidates": candidates,
+        "model_context": search_model_context(items, candidates, query, filters),
         "summary": {
             "search_items_seen": len(items),
             "candidates": len(candidates),
@@ -2171,7 +2529,7 @@ def run_search_resources(args: argparse.Namespace) -> int:
             "endpoint": args.search_url or SEARCH_URLS[0],
             "auth_context": has_runtime_auth_context(access_token, args.cookie, extra_headers, args),
             "browser_state_context": bool(args.browser_state),
-            "note": "搜索候选用于分析和排序；下载前应继续抓取详情并解析 ti_items。",
+            "note": "已开启详情追踪时，候选优先使用详情文件项；未开启或详情失败时，搜索候选仅适合展示和继续展开，下载前应解析真实文件项。",
         },
     }
     if detail_failures:
@@ -2194,6 +2552,7 @@ def run_detail_probe(args: argparse.Namespace) -> int:
         online = True
         endpoint = args.search_url or SEARCH_URLS[0]
     items = extract_search_items(data, args.limit)
+    items = filter_search_items_by_tags(items, filters)
     probes = [probe_detail_for_search_item(item, args, access_token, extra_headers) for item in items]
     matrix = detail_probe_matrix(probes)
     status_counts = count_values([norm(item.get("detail_status")) for item in probes])
@@ -2405,6 +2764,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     detail = sub.add_parser("candidates-from-detail", help="从 SmartEdu 详情 JSON 输出标准候选")
     detail.add_argument("--detail-json", action="append", help="本地 SmartEdu detail JSON，可重复")
+    detail.add_argument("--url", help="SmartEdu 详情页 URL，例如 syncClassroom/classActivity、qualityCourse、tchMaterial")
     detail.add_argument("--catalog", help="栏目，例如 qualityCourse、syncClassroom、family")
     detail.add_argument("--sub-catalog", help="子栏目，例如 course、prepare_lesson")
     detail.add_argument("--resource-id", help="资源 ID；与 --catalog 一起尝试抓取详情")
@@ -2463,7 +2823,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--order-direction", default="desc", help="排序方向")
     search.add_argument("--offset", type=int, default=0, help="分页 offset")
     search.add_argument("--limit", type=int, default=12, help="最多输出候选数量")
-    search.add_argument("--cross-tenant", action="store_true", help="允许跨租户搜索")
+    search.add_argument("--cross-tenant", action="store_true", default=True, help="允许跨租户搜索；默认开启以匹配 SmartEdu 前端请求")
     search.add_argument("--access-token", help="SmartEdu access token; prefer SMARTEDU_ACCESS_TOKEN")
     search.add_argument("--cookie", help="SmartEdu cookie; prefer SMARTEDU_COOKIE")
     search.add_argument("--header", action="append", help="额外请求头，格式 'Name: value'；也可用 SMARTEDU_HEADERS")
